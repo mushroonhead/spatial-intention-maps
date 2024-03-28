@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# run this file in a directory for this project
+# for example, we are currently running this in `/home/joshmah/spatial_int_map_diffuser`
+
 git clone https://github.com/mushroonhead/spatial-intention-maps.git
 
 module purge
@@ -7,7 +10,7 @@ module load python/3.10.4
 module load cuda/11.8.0
 
 mkdir envs/
-cd envs/spatial_int_maps_3_10_4
+cd envs/
 python -m venv spatial_int_maps_3_10_4
 source spatial_int_maps_3_10_4/bin/activate
 
