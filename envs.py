@@ -16,7 +16,7 @@ from skimage.draw import line
 from skimage.morphology import binary_dilation, dilation
 from skimage.morphology.footprints import disk
 
-import vector_utils
+# import vector_utils
 from shortest_paths.shortest_paths import GridGraph
 
 
