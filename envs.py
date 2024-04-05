@@ -6,7 +6,7 @@ from multiprocessing.connection import Client
 from pathlib import Path
 from pprint import pprint
 
-import anki_vector
+# import anki_vector
 import numpy as np
 import pybullet
 import pybullet_utils.bullet_client as bc
@@ -14,9 +14,9 @@ from scipy.ndimage import rotate as rotate_image
 from scipy.ndimage.morphology import distance_transform_edt
 from skimage.draw import line
 from skimage.morphology import binary_dilation, dilation
-from skimage.morphology.selem import disk
+from skimage.morphology.footprints import disk
 
-import vector_utils
+# import vector_utils
 from shortest_paths.shortest_paths import GridGraph
 
 
@@ -828,7 +828,8 @@ class Robot(ABC):
         self.target_end_effector_position = None
         self.waypoint_positions = None
         self.waypoint_headings = None
-        self.controller = RealRobotController(self, real_robot_index, debug=self.env.real_debug) if real else RobotController(self)
+        # self.controller = RealRobotController(self, real_robot_index, debug=self.env.real_debug) if real else RobotController(self)
+        self.controller = RobotController(self)
 
         # Collision detection
         self.collision_body_a_ids_set = set([self.id])
@@ -1501,376 +1502,376 @@ class RobotController:
                         self.robot.prepare_rescue_cube(cube_id)
                         self.robot.rescue_cube()
 
-class RealRobotController:
-    LOOKAHEAD_DISTANCE = 0.1  # 10 cm
-    TURN_THRESHOLD = math.radians(5)  # 5 deg
+# class RealRobotController:
+#     LOOKAHEAD_DISTANCE = 0.1  # 10 cm
+#     TURN_THRESHOLD = math.radians(5)  # 5 deg
 
-    def __init__(self, robot, real_robot_index, debug=False):
-        self.robot = robot
-        self.real_robot_name = vector_utils.get_robot_name(real_robot_index)
-        self.debug = debug
-        self.real_robot = anki_vector.AsyncRobot(serial=vector_utils.get_robot_serial(real_robot_index), default_logging=False, behavior_control_level=anki_vector.connection.ControlPriorityLevel.OVERRIDE_BEHAVIORS_PRIORITY)
-        self.real_robot.connect()
-        battery_state = self.real_robot.get_battery_state().result()
-        battery_volts = '{:.2f}'.format(battery_state.battery_volts) if battery_state else '?'
-        print('Connected to {} ({} V)'.format(self.real_robot_name, battery_volts))
-        self._reset_motors()
+#     def __init__(self, robot, real_robot_index, debug=False):
+#         self.robot = robot
+#         self.real_robot_name = vector_utils.get_robot_name(real_robot_index)
+#         self.debug = debug
+#         self.real_robot = anki_vector.AsyncRobot(serial=vector_utils.get_robot_serial(real_robot_index), default_logging=False, behavior_control_level=anki_vector.connection.ControlPriorityLevel.OVERRIDE_BEHAVIORS_PRIORITY)
+#         self.real_robot.connect()
+#         battery_state = self.real_robot.get_battery_state().result()
+#         battery_volts = '{:.2f}'.format(battery_state.battery_volts) if battery_state else '?'
+#         print('Connected to {} ({} V)'.format(self.real_robot_name, battery_volts))
+#         self._reset_motors()
 
-        self.state = 'idle'
-        self.resume_state = None  # For pausing
-        self.waypoint_index = None  # Index of waypoint we are currently headed towards
-        self.prev_position = None
-        self.prev_heading = None
-        self.sim_steps = 0
-        self.target_cube_id = None
-        self.not_driving_sim_steps = None
-        self.not_turning_sim_steps = None
-        self.cube_sim_steps = None  # For monitoring lifted, thrown, or rescued cubes
-        self.lifting_sim_steps = None  # For handling failed lifts
-        self.throwing_sim_steps = None  # For handling failed throws
+#         self.state = 'idle'
+#         self.resume_state = None  # For pausing
+#         self.waypoint_index = None  # Index of waypoint we are currently headed towards
+#         self.prev_position = None
+#         self.prev_heading = None
+#         self.sim_steps = 0
+#         self.target_cube_id = None
+#         self.not_driving_sim_steps = None
+#         self.not_turning_sim_steps = None
+#         self.cube_sim_steps = None  # For monitoring lifted, thrown, or rescued cubes
+#         self.lifting_sim_steps = None  # For handling failed lifts
+#         self.throwing_sim_steps = None  # For handling failed throws
 
-        if self.debug:
-            self.debug_data = None
+#         if self.debug:
+#             self.debug_data = None
 
-    def reset(self):
-        self.real_robot.motors.set_wheel_motors(0, 0)
+#     def reset(self):
+#         self.real_robot.motors.set_wheel_motors(0, 0)
 
-        if not isinstance(self.robot, LiftingRobot):
-            self.real_robot.behavior.set_lift_height(0)
+#         if not isinstance(self.robot, LiftingRobot):
+#             self.real_robot.behavior.set_lift_height(0)
 
-        if isinstance(self.robot, RobotWithHooks):
-            self.robot.attach_end_effector_shape()
+#         if isinstance(self.robot, RobotWithHooks):
+#             self.robot.attach_end_effector_shape()
 
-        self.state = 'idle'
-        self.resume_state = None
-        self.waypoint_index = 1
-        self.prev_position = None
-        self.prev_heading = None
-        self.sim_steps = 0
-        self.target_cube_id = None
-        self.not_driving_sim_steps = 0
-        self.not_turning_sim_steps = 0
-        self.cube_sim_steps = 0
-        self.lifting_sim_steps = 0
-        self.throwing_sim_steps = 0
+#         self.state = 'idle'
+#         self.resume_state = None
+#         self.waypoint_index = 1
+#         self.prev_position = None
+#         self.prev_heading = None
+#         self.sim_steps = 0
+#         self.target_cube_id = None
+#         self.not_driving_sim_steps = 0
+#         self.not_turning_sim_steps = 0
+#         self.cube_sim_steps = 0
+#         self.lifting_sim_steps = 0
+#         self.throwing_sim_steps = 0
 
-        if self.debug:
-            self.debug_data = None
+#         if self.debug:
+#             self.debug_data = None
 
-    def new_action(self):
-        self.state = 'turning'
+#     def new_action(self):
+#         self.state = 'turning'
 
-    def step(self):
-        # States: idle, stopping, turning, driving, slowing, aligning, lifting, rescuing, throwing, pulling
+#     def step(self):
+#         # States: idle, stopping, turning, driving, slowing, aligning, lifting, rescuing, throwing, pulling
 
-        if self.state == 'idle':
-            return
+#         if self.state == 'idle':
+#             return
 
-        self.sim_steps += 1
+#         self.sim_steps += 1
 
-        # Periodically update the map (map updates are slow)
-        if self.sim_steps % 20 == 0:
-            self.robot.update_map()
+#         # Periodically update the map (map updates are slow)
+#         if self.sim_steps % 20 == 0:
+#             self.robot.update_map()
 
-        # Update target end effector position to track target cube
-        if self.state in {'aligning', 'pulling'}:
-            # Sometimes there is another cube between the robot and the target cube
-            cube_id = self.robot.ray_test_cube()
-            if cube_id is not None:
-                self.target_cube_id = cube_id
-            self.robot.target_end_effector_position = self.robot.env.get_cube_position(self.target_cube_id)
+#         # Update target end effector position to track target cube
+#         if self.state in {'aligning', 'pulling'}:
+#             # Sometimes there is another cube between the robot and the target cube
+#             cube_id = self.robot.ray_test_cube()
+#             if cube_id is not None:
+#                 self.target_cube_id = cube_id
+#             self.robot.target_end_effector_position = self.robot.env.get_cube_position(self.target_cube_id)
 
-        if self.state == 'stopping':
-            self.real_robot.motors.set_wheel_motors(0, 0)
-            if not self.real_robot.status.are_wheels_moving:
-                self._done_stopping()
+#         if self.state == 'stopping':
+#             self.real_robot.motors.set_wheel_motors(0, 0)
+#             if not self.real_robot.status.are_wheels_moving:
+#                 self._done_stopping()
 
-        elif self.state in {'turning', 'driving', 'slowing', 'aligning'}:
-            current_position, current_heading = self.robot.get_position(), self.robot.get_heading()
+#         elif self.state in {'turning', 'driving', 'slowing', 'aligning'}:
+#             current_position, current_heading = self.robot.get_position(), self.robot.get_heading()
 
-            lookahead_position = self._get_lookahead_position()
-            dx = lookahead_position[0] - current_position[0]
-            dy = lookahead_position[1] - current_position[1]
-            heading_diff = heading_difference(current_heading, math.atan2(dy, dx))
+#             lookahead_position = self._get_lookahead_position()
+#             dx = lookahead_position[0] - current_position[0]
+#             dy = lookahead_position[1] - current_position[1]
+#             heading_diff = heading_difference(current_heading, math.atan2(dy, dx))
 
-            if self.debug:
-                self.debug_data = (lookahead_position, None, None, None, None)
+#             if self.debug:
+#                 self.debug_data = (lookahead_position, None, None, None, None)
 
-            if self.state == 'turning':
-                if abs(heading_diff) < RealRobotController.TURN_THRESHOLD:
-                    self.real_robot.motors.set_wheel_motors(0, 0)
-                    if not self.real_robot.status.are_wheels_moving:
-                        self.state = 'driving'
-                else:
-                    speed = max(20, min(100, 100 * abs(heading_diff)))  # Must be at least 20 for marker detection to detect changes
+#             if self.state == 'turning':
+#                 if abs(heading_diff) < RealRobotController.TURN_THRESHOLD:
+#                     self.real_robot.motors.set_wheel_motors(0, 0)
+#                     if not self.real_robot.status.are_wheels_moving:
+#                         self.state = 'driving'
+#                 else:
+#                     speed = max(20, min(100, 100 * abs(heading_diff)))  # Must be at least 20 for marker detection to detect changes
 
-                    if self.prev_heading is not None:
-                        # Detect if robot is turning more slowly than expected
-                        if abs(heading_difference(self.prev_heading, current_heading)) < speed / 2000:
-                            self.not_turning_sim_steps += 1
-                        else:
-                            self.not_turning_sim_steps = 0
-                        #print(self.not_turning_sim_steps, abs(heading_difference(self.prev_heading, current_heading)), speed / 2000)
-                        if self.not_turning_sim_steps > 20:
-                            self.real_robot.motors.set_wheel_motors(0, 0)
-                            self.state = 'stopping'
+#                     if self.prev_heading is not None:
+#                         # Detect if robot is turning more slowly than expected
+#                         if abs(heading_difference(self.prev_heading, current_heading)) < speed / 2000:
+#                             self.not_turning_sim_steps += 1
+#                         else:
+#                             self.not_turning_sim_steps = 0
+#                         #print(self.not_turning_sim_steps, abs(heading_difference(self.prev_heading, current_heading)), speed / 2000)
+#                         if self.not_turning_sim_steps > 20:
+#                             self.real_robot.motors.set_wheel_motors(0, 0)
+#                             self.state = 'stopping'
 
-                    if self.state == 'turning':
-                        sign = math.copysign(1, heading_diff)
-                        self.real_robot.motors.set_wheel_motors(-1 * sign * speed, sign * speed)
+#                     if self.state == 'turning':
+#                         sign = math.copysign(1, heading_diff)
+#                         self.real_robot.motors.set_wheel_motors(-1 * sign * speed, sign * speed)
 
-            elif self.state in {'driving', 'slowing', 'aligning'}:
-                signed_dist = distance(current_position, self.robot.target_end_effector_position) - (self.robot.END_EFFECTOR_LOCATION + VectorEnv.CUBE_WIDTH / 2)
-                speed = max(20, min(100, 2000 * abs(signed_dist))) if self.state == 'slowing' else 100  # Must be at least 20 for marker detection to detect changes
+#             elif self.state in {'driving', 'slowing', 'aligning'}:
+#                 signed_dist = distance(current_position, self.robot.target_end_effector_position) - (self.robot.END_EFFECTOR_LOCATION + VectorEnv.CUBE_WIDTH / 2)
+#                 speed = max(20, min(100, 2000 * abs(signed_dist))) if self.state == 'slowing' else 100  # Must be at least 20 for marker detection to detect changes
 
-                if self.prev_position is not None:
-                    # Detect if robot is driving more slowly than expected
-                    if distance(self.prev_position, current_position) < speed / 40000:
-                        self.not_driving_sim_steps += 1
-                    else:
-                        self.not_driving_sim_steps = 0
-                    #print(self.not_driving_sim_steps, distance(self.prev_position, current_position), speed / 40000)
+#                 if self.prev_position is not None:
+#                     # Detect if robot is driving more slowly than expected
+#                     if distance(self.prev_position, current_position) < speed / 40000:
+#                         self.not_driving_sim_steps += 1
+#                     else:
+#                         self.not_driving_sim_steps = 0
+#                     #print(self.not_driving_sim_steps, distance(self.prev_position, current_position), speed / 40000)
 
-                    # Check for collisions (It would be nice to have collision detection while turning too, but that is not currently implemented)
-                    if distance(self.robot.waypoint_positions[0], current_position) > 0.01 or self.not_driving_sim_steps > 20:
-                        self.robot.check_for_collisions()
+#                     # Check for collisions (It would be nice to have collision detection while turning too, but that is not currently implemented)
+#                     if distance(self.robot.waypoint_positions[0], current_position) > 0.01 or self.not_driving_sim_steps > 20:
+#                         self.robot.check_for_collisions()
 
-                if self.robot.collided_with_obstacle or self.robot.collided_with_robot or self.not_driving_sim_steps > 20:
-                    self.real_robot.motors.set_wheel_motors(0, 0)
-                    self.state = 'stopping'
+#                 if self.robot.collided_with_obstacle or self.robot.collided_with_robot or self.not_driving_sim_steps > 20:
+#                     self.real_robot.motors.set_wheel_motors(0, 0)
+#                     self.state = 'stopping'
 
-                elif self.state == 'driving' and signed_dist < VectorEnv.CUBE_WIDTH:
-                    self._done_driving()
+#                 elif self.state == 'driving' and signed_dist < VectorEnv.CUBE_WIDTH:
+#                     self._done_driving()
 
-                elif self.state == 'slowing' and abs(signed_dist) < 0.002:  # 2 mm
-                    self._done_slowing()
+#                 elif self.state == 'slowing' and abs(signed_dist) < 0.002:  # 2 mm
+#                     self._done_slowing()
 
-                elif self.state == 'aligning' and abs(heading_diff) < RealRobotController.TURN_THRESHOLD and signed_dist < 0.001:  # 1 mm buffer for the hooks
-                    # If marker detection fails to detect the target cube, we might get a false positive here since the cube pose will be outdated
-                    self._done_aligning()
+#                 elif self.state == 'aligning' and abs(heading_diff) < RealRobotController.TURN_THRESHOLD and signed_dist < 0.001:  # 1 mm buffer for the hooks
+#                     # If marker detection fails to detect the target cube, we might get a false positive here since the cube pose will be outdated
+#                     self._done_aligning()
 
-                else:
-                    # Pure pursuit
-                    lookahead_dist = math.sqrt(dx**2 + dy**2)
-                    signed_radius = lookahead_dist / (2 * math.sin(heading_diff))
-                    sign = math.copysign(1, signed_dist)
-                    wheel_width = 0.1  # 10 cm (larger than actual width due to tread slip)
-                    left_wheel_speed = sign * speed * (signed_radius - sign * wheel_width / 2) / signed_radius
-                    right_wheel_speed = sign * speed * (signed_radius + sign * wheel_width / 2) / signed_radius
+#                 else:
+#                     # Pure pursuit
+#                     lookahead_dist = math.sqrt(dx**2 + dy**2)
+#                     signed_radius = lookahead_dist / (2 * math.sin(heading_diff))
+#                     sign = math.copysign(1, signed_dist)
+#                     wheel_width = 0.1  # 10 cm (larger than actual width due to tread slip)
+#                     left_wheel_speed = sign * speed * (signed_radius - sign * wheel_width / 2) / signed_radius
+#                     right_wheel_speed = sign * speed * (signed_radius + sign * wheel_width / 2) / signed_radius
 
-                    # Turn more forcefully if stuck
-                    if isinstance(self.robot, PushingRobot) and abs(heading_diff) > RealRobotController.TURN_THRESHOLD and self.not_driving_sim_steps > 10:
-                        if left_wheel_speed > right_wheel_speed:
-                            right_wheel_speed = -left_wheel_speed
-                        else:
-                            left_wheel_speed = -right_wheel_speed
+#                     # Turn more forcefully if stuck
+#                     if isinstance(self.robot, PushingRobot) and abs(heading_diff) > RealRobotController.TURN_THRESHOLD and self.not_driving_sim_steps > 10:
+#                         if left_wheel_speed > right_wheel_speed:
+#                             right_wheel_speed = -left_wheel_speed
+#                         else:
+#                             left_wheel_speed = -right_wheel_speed
 
-                    self.real_robot.motors.set_wheel_motors(left_wheel_speed, right_wheel_speed)
+#                     self.real_robot.motors.set_wheel_motors(left_wheel_speed, right_wheel_speed)
 
-                    if self.debug:
-                        self.debug_data = (lookahead_position, signed_radius, heading_diff, current_position, current_heading)
+#                     if self.debug:
+#                         self.debug_data = (lookahead_position, signed_radius, heading_diff, current_position, current_heading)
 
-            self.prev_position, self.prev_heading = current_position, current_heading
+#             self.prev_position, self.prev_heading = current_position, current_heading
 
-        elif self.state == 'lifting':
-            self.lifting_sim_steps += 1
-            if self.lifting_sim_steps > 20:  # Cube is probably stuck against a wall
-                self.lifting_sim_steps = 0
-                self.state = 'stopping'
-            elif self.real_robot.lift_height_mm > self._lift_height_to_mm(0.5):
-                self.lifting_sim_steps = 0
-                self._done_lifting()
+#         elif self.state == 'lifting':
+#             self.lifting_sim_steps += 1
+#             if self.lifting_sim_steps > 20:  # Cube is probably stuck against a wall
+#                 self.lifting_sim_steps = 0
+#                 self.state = 'stopping'
+#             elif self.real_robot.lift_height_mm > self._lift_height_to_mm(0.5):
+#                 self.lifting_sim_steps = 0
+#                 self._done_lifting()
 
-        elif self.state == 'throwing':
-            if self.real_robot.lift_height_mm > self._lift_height_to_mm(0.5):
-                self.cube_sim_steps += 1
-                if self.cube_sim_steps > 20:
-                    self.cube_sim_steps = 0
-                    self._done_throwing()
-            else:
-                self.throwing_sim_steps += 1
-                if self.throwing_sim_steps > 10:
-                    self.throwing_sim_steps = 0
-                    self._failed_throwing()
+#         elif self.state == 'throwing':
+#             if self.real_robot.lift_height_mm > self._lift_height_to_mm(0.5):
+#                 self.cube_sim_steps += 1
+#                 if self.cube_sim_steps > 20:
+#                     self.cube_sim_steps = 0
+#                     self._done_throwing()
+#             else:
+#                 self.throwing_sim_steps += 1
+#                 if self.throwing_sim_steps > 10:
+#                     self.throwing_sim_steps = 0
+#                     self._failed_throwing()
 
-        elif self.state == 'pulling':
-            self.throwing_sim_steps += 1
-            if self.throwing_sim_steps > 10:
-                self.throwing_sim_steps = 0
-                self._done_pulling()
+#         elif self.state == 'pulling':
+#             self.throwing_sim_steps += 1
+#             if self.throwing_sim_steps > 10:
+#                 self.throwing_sim_steps = 0
+#                 self._done_pulling()
 
-        elif self.state == 'rescuing':
-            if self.cube_sim_steps > 10:
-                self.cube_sim_steps = 0
-                self._done_rescuing()
+#         elif self.state == 'rescuing':
+#             if self.cube_sim_steps > 10:
+#                 self.cube_sim_steps = 0
+#                 self._done_rescuing()
 
-    def get_intention_path(self):
-        if self.state == 'idle':
-            return None
-        lookahead_position = self._get_lookahead_position()
-        intermediate_waypoint = (lookahead_position[0], lookahead_position[1], 0)
-        return [self.robot.get_position(), intermediate_waypoint] + self.robot.waypoint_positions[self.waypoint_index:-1] + [self.robot.target_end_effector_position]
+#     def get_intention_path(self):
+#         if self.state == 'idle':
+#             return None
+#         lookahead_position = self._get_lookahead_position()
+#         intermediate_waypoint = (lookahead_position[0], lookahead_position[1], 0)
+#         return [self.robot.get_position(), intermediate_waypoint] + self.robot.waypoint_positions[self.waypoint_index:-1] + [self.robot.target_end_effector_position]
 
-    def get_history_path(self):
-        if self.state == 'idle':
-            return None
-        current_position = self.robot.get_position()
-        closest_waypoint_index = self.waypoint_index
-        while closest_waypoint_index > 0:
-            start = self.robot.waypoint_positions[closest_waypoint_index - 1]
-            end = self.robot.waypoint_positions[closest_waypoint_index]
-            d = (end[0] - start[0], end[1] - start[1])
-            f = (start[0] - current_position[0], start[1] - current_position[1])
-            t1 = self._intersect(d, f, RealRobotController.LOOKAHEAD_DISTANCE, use_t1=True)
-            if t1 is not None:
-                intermediate_waypoint = (start[0] + t1 * d[0], start[1] + t1 * d[1], 0)
-                return self.robot.waypoint_positions[:closest_waypoint_index] + [intermediate_waypoint, current_position]
-            closest_waypoint_index -= 1
-        return [self.robot.waypoint_positions[0], current_position]
+#     def get_history_path(self):
+#         if self.state == 'idle':
+#             return None
+#         current_position = self.robot.get_position()
+#         closest_waypoint_index = self.waypoint_index
+#         while closest_waypoint_index > 0:
+#             start = self.robot.waypoint_positions[closest_waypoint_index - 1]
+#             end = self.robot.waypoint_positions[closest_waypoint_index]
+#             d = (end[0] - start[0], end[1] - start[1])
+#             f = (start[0] - current_position[0], start[1] - current_position[1])
+#             t1 = self._intersect(d, f, RealRobotController.LOOKAHEAD_DISTANCE, use_t1=True)
+#             if t1 is not None:
+#                 intermediate_waypoint = (start[0] + t1 * d[0], start[1] + t1 * d[1], 0)
+#                 return self.robot.waypoint_positions[:closest_waypoint_index] + [intermediate_waypoint, current_position]
+#             closest_waypoint_index -= 1
+#         return [self.robot.waypoint_positions[0], current_position]
 
-    def pause(self):
-        if self.state != 'idle':
-            self.resume_state = self.state
-            self.real_robot.motors.set_wheel_motors(0, 0)
-            self.state = 'stopping'
+#     def pause(self):
+#         if self.state != 'idle':
+#             self.resume_state = self.state
+#             self.real_robot.motors.set_wheel_motors(0, 0)
+#             self.state = 'stopping'
 
-    def resume(self):
-        if self.resume_state is not None:
-            self.state = self.resume_state
-            self.resume_state = None
+#     def resume(self):
+#         if self.resume_state is not None:
+#             self.state = self.resume_state
+#             self.resume_state = None
 
-    def disconnect(self):
-        self._reset_motors()
-        self.real_robot.disconnect()
-        print('Disconnected from {}'.format(self.real_robot_name))
+#     def disconnect(self):
+#         self._reset_motors()
+#         self.real_robot.disconnect()
+#         print('Disconnected from {}'.format(self.real_robot_name))
 
-    def monitor_lifted_cube(self, estimated_cube_pose):
-        # Note: Since the lifted cube does not lie in the same plane, the cube position is only a rough estimate
-        if distance(self.robot.get_position(), estimated_cube_pose['position']) > 0.1:  # 10 cm
-            self.cube_sim_steps += 1
-        else:
-            self.cube_sim_steps = 0
+#     def monitor_lifted_cube(self, estimated_cube_pose):
+#         # Note: Since the lifted cube does not lie in the same plane, the cube position is only a rough estimate
+#         if distance(self.robot.get_position(), estimated_cube_pose['position']) > 0.1:  # 10 cm
+#             self.cube_sim_steps += 1
+#         else:
+#             self.cube_sim_steps = 0
 
-        if self.cube_sim_steps > 10:
-            self.real_robot.behavior.set_lift_height(0)
-            self.robot.drop_cube()
+#         if self.cube_sim_steps > 10:
+#             self.real_robot.behavior.set_lift_height(0)
+#             self.robot.drop_cube()
 
-    def monitor_rescued_cube(self, estimated_cube_pose):
-        if estimated_cube_pose is None:
-            self.cube_sim_steps += 1
-        else:
-            self.cube_sim_steps = 0
+#     def monitor_rescued_cube(self, estimated_cube_pose):
+#         if estimated_cube_pose is None:
+#             self.cube_sim_steps += 1
+#         else:
+#             self.cube_sim_steps = 0
 
-    def _done_stopping(self):
-        self.robot.update_distance()
-        self.state = 'paused' if self.resume_state is not None else 'idle'
+#     def _done_stopping(self):
+#         self.robot.update_distance()
+#         self.state = 'paused' if self.resume_state is not None else 'idle'
 
-    def _done_driving(self):
-        self.state = 'slowing'
-        if isinstance(self.robot, RobotWithHooks) and self.robot.potential_cube_id is not None:
-            cube_id = self.robot.ray_test_cube()
-            if cube_id is not None:
-                self.robot.update_distance()
-                self.robot.detach_end_effector_shape()
-                self.target_cube_id = cube_id
-                self.state = 'aligning'
+#     def _done_driving(self):
+#         self.state = 'slowing'
+#         if isinstance(self.robot, RobotWithHooks) and self.robot.potential_cube_id is not None:
+#             cube_id = self.robot.ray_test_cube()
+#             if cube_id is not None:
+#                 self.robot.update_distance()
+#                 self.robot.detach_end_effector_shape()
+#                 self.target_cube_id = cube_id
+#                 self.state = 'aligning'
 
-    def _done_slowing(self):
-        self.real_robot.motors.set_wheel_motors(0, 0)
-        self.state = 'stopping'
+#     def _done_slowing(self):
+#         self.real_robot.motors.set_wheel_motors(0, 0)
+#         self.state = 'stopping'
 
-        if isinstance(self.robot, LiftingRobot) and self.robot.lift_state == 'lifting':
-            if self.robot.action[0] == 1:
-                # Drop cube
-                self.real_robot.behavior.set_lift_height(0)
-                self.robot.drop_cube()
-                for _ in range(30):  # Wait for simulation to update
-                    self.robot.env.step_simulation()
-            else:
-                # Give lifting partial rewards
-                self.robot.process_lifted_cube_position()
+#         if isinstance(self.robot, LiftingRobot) and self.robot.lift_state == 'lifting':
+#             if self.robot.action[0] == 1:
+#                 # Drop cube
+#                 self.real_robot.behavior.set_lift_height(0)
+#                 self.robot.drop_cube()
+#                 for _ in range(30):  # Wait for simulation to update
+#                     self.robot.env.step_simulation()
+#             else:
+#                 # Give lifting partial rewards
+#                 self.robot.process_lifted_cube_position()
 
-    def _done_aligning(self):
-        self.real_robot.motors.set_wheel_motors(0, 0)
-        if isinstance(self.robot, (LiftingRobot, RescueRobot)):
-            self.real_robot.behavior.set_lift_height(0.85)  # Using 1.0 causes the marker on top of the robot to be occluded
-            self.state = 'lifting'
-        elif isinstance(self.robot, ThrowingRobot):
-            self.robot.prepare_throw_cube(self.target_cube_id)
-            self.real_robot.motors.set_lift_motor(8.0)
-            self.state = 'throwing'
+#     def _done_aligning(self):
+#         self.real_robot.motors.set_wheel_motors(0, 0)
+#         if isinstance(self.robot, (LiftingRobot, RescueRobot)):
+#             self.real_robot.behavior.set_lift_height(0.85)  # Using 1.0 causes the marker on top of the robot to be occluded
+#             self.state = 'lifting'
+#         elif isinstance(self.robot, ThrowingRobot):
+#             self.robot.prepare_throw_cube(self.target_cube_id)
+#             self.real_robot.motors.set_lift_motor(8.0)
+#             self.state = 'throwing'
 
-    def _done_lifting(self):
-        if isinstance(self.robot, LiftingRobot):
-            self.robot.lift_cube(self.target_cube_id)
-            self.state = 'stopping'
-        elif isinstance(self.robot, RescueRobot):
-            self.robot.prepare_rescue_cube(self.target_cube_id)
-            self.cube_sim_steps = 0
-            self.state = 'rescuing'
+#     def _done_lifting(self):
+#         if isinstance(self.robot, LiftingRobot):
+#             self.robot.lift_cube(self.target_cube_id)
+#             self.state = 'stopping'
+#         elif isinstance(self.robot, RescueRobot):
+#             self.robot.prepare_rescue_cube(self.target_cube_id)
+#             self.cube_sim_steps = 0
+#             self.state = 'rescuing'
 
-    def _done_throwing(self):
-        self.real_robot.motors.set_lift_motor(0)
-        self.real_robot.behavior.set_lift_height(0)
-        self.robot.finish_throw_cube()
-        self.state = 'stopping'
+#     def _done_throwing(self):
+#         self.real_robot.motors.set_lift_motor(0)
+#         self.real_robot.behavior.set_lift_height(0)
+#         self.robot.finish_throw_cube()
+#         self.state = 'stopping'
 
-    def _failed_throwing(self):
-        self.real_robot.motors.set_lift_motor(0)
-        self.real_robot.motors.set_wheel_motors(-40, -40)
-        self.state = 'pulling'
+#     def _failed_throwing(self):
+#         self.real_robot.motors.set_lift_motor(0)
+#         self.real_robot.motors.set_wheel_motors(-40, -40)
+#         self.state = 'pulling'
 
-    def _done_pulling(self):
-        self.real_robot.motors.set_wheel_motors(0, 0)
-        self.real_robot.motors.set_lift_motor(8.0)
-        self.state = 'throwing'
+#     def _done_pulling(self):
+#         self.real_robot.motors.set_wheel_motors(0, 0)
+#         self.real_robot.motors.set_lift_motor(8.0)
+#         self.state = 'throwing'
 
-    def _done_rescuing(self):
-        self.real_robot.behavior.set_lift_height(0)
-        self.robot.rescue_cube()
-        self.state = 'stopping'
+#     def _done_rescuing(self):
+#         self.real_robot.behavior.set_lift_height(0)
+#         self.robot.rescue_cube()
+#         self.state = 'stopping'
 
-    def _reset_motors(self):
-        self.real_robot.motors.set_wheel_motors(0, 0)
-        self.real_robot.behavior.set_lift_height(0)
-        self.real_robot.behavior.set_head_angle(anki_vector.util.degrees(0))
+#     def _reset_motors(self):
+#         self.real_robot.motors.set_wheel_motors(0, 0)
+#         self.real_robot.behavior.set_lift_height(0)
+#         self.real_robot.behavior.set_head_angle(anki_vector.util.degrees(0))
 
-    def _get_lookahead_position(self):
-        current_position = self.robot.get_position()
-        while True:
-            start = self.robot.waypoint_positions[self.waypoint_index - 1]
-            end = self.robot.waypoint_positions[self.waypoint_index]
-            d = (end[0] - start[0], end[1] - start[1])
-            f = (start[0] - current_position[0], start[1] - current_position[1])
-            t2 = self._intersect(d, f, RealRobotController.LOOKAHEAD_DISTANCE)
-            if t2 is not None:
-                return (start[0] + t2 * d[0], start[1] + t2 * d[1])
-            if self.waypoint_index == len(self.robot.waypoint_positions) - 1:
-                return self.robot.target_end_effector_position
-            self.robot.update_distance()
-            self.waypoint_index += 1
+#     def _get_lookahead_position(self):
+#         current_position = self.robot.get_position()
+#         while True:
+#             start = self.robot.waypoint_positions[self.waypoint_index - 1]
+#             end = self.robot.waypoint_positions[self.waypoint_index]
+#             d = (end[0] - start[0], end[1] - start[1])
+#             f = (start[0] - current_position[0], start[1] - current_position[1])
+#             t2 = self._intersect(d, f, RealRobotController.LOOKAHEAD_DISTANCE)
+#             if t2 is not None:
+#                 return (start[0] + t2 * d[0], start[1] + t2 * d[1])
+#             if self.waypoint_index == len(self.robot.waypoint_positions) - 1:
+#                 return self.robot.target_end_effector_position
+#             self.robot.update_distance()
+#             self.waypoint_index += 1
 
-    @staticmethod
-    def _intersect(d, f, r, use_t1=False):
-        # https://stackoverflow.com/questions/1073336/circle-line-segment-collision-detection-algorithm/1084899%231084899
-        a = dot(d, d)
-        b = 2 * dot(f, d)
-        c = dot(f, f) - r * r
-        discriminant = (b * b) - (4 * a * c)
-        if discriminant >= 0:
-            if use_t1:
-                t1 = (-b - math.sqrt(discriminant)) / (2 * a + 1e-6)
-                if 0 <= t1 <= 1:
-                    return t1
-            else:
-                t2 = (-b + math.sqrt(discriminant)) / (2 * a + 1e-6)
-                if 0 <= t2 <= 1:
-                    return t2
-        return None
+#     @staticmethod
+#     def _intersect(d, f, r, use_t1=False):
+#         # https://stackoverflow.com/questions/1073336/circle-line-segment-collision-detection-algorithm/1084899%231084899
+#         a = dot(d, d)
+#         b = 2 * dot(f, d)
+#         c = dot(f, f) - r * r
+#         discriminant = (b * b) - (4 * a * c)
+#         if discriminant >= 0:
+#             if use_t1:
+#                 t1 = (-b - math.sqrt(discriminant)) / (2 * a + 1e-6)
+#                 if 0 <= t1 <= 1:
+#                     return t1
+#             else:
+#                 t2 = (-b + math.sqrt(discriminant)) / (2 * a + 1e-6)
+#                 if 0 <= t2 <= 1:
+#                     return t2
+#         return None
 
-    @staticmethod
-    def _lift_height_to_mm(height):
-        return anki_vector.behavior.MIN_LIFT_HEIGHT_MM + height * (anki_vector.behavior.MAX_LIFT_HEIGHT_MM - anki_vector.behavior.MIN_LIFT_HEIGHT_MM)
+#     @staticmethod
+#     def _lift_height_to_mm(height):
+#         return anki_vector.behavior.MIN_LIFT_HEIGHT_MM + height * (anki_vector.behavior.MAX_LIFT_HEIGHT_MM - anki_vector.behavior.MIN_LIFT_HEIGHT_MM)
 
 class Camera(ABC):
     NEAR = None
