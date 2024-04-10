@@ -4,7 +4,7 @@ import random
 import sys
 from collections import namedtuple
 from pathlib import Path
-
+import copy
 # Prevent numpy from using up all cpu
 import os
 os.environ['MKL_NUM_THREADS'] = '1'  # pylint: disable=wrong-import-position
@@ -15,8 +15,14 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.nn.functional import smooth_l1_loss
 from torch.utils.tensorboard import SummaryWriter
+from torchvision import transforms
 from tqdm import tqdm
 
+from agents.diffusion import Diffusion
+from agents.model import MLP
+from agents.helpers import EMA
+
+from envs import VectorEnv
 import utils
 
 
@@ -157,6 +163,51 @@ def train_intention(intention_net, optimizer, batch, transform_fn):
 
     return train_info
 
+def step_diffusion(state, policy_diffusion, robot_group_types, exploration_eps=None, debug=False):
+    #if exploration_eps is None:
+    #    exploration_eps = self.cfg.final_exploration
+    action = [[None for _ in g] for g in state]
+    #output = [[None for _ in g] for g in state]
+    with torch.no_grad():
+        for i, g in enumerate(state):
+            robot_type = robot_group_types[i]
+            policy_diffusion[i].eval()
+            for j, s in enumerate(g):
+                if s is not None:
+                    s = transforms.ToTensor(s).unsqueeze(0).to(device)
+                    o = policy_diffusion[i](s).squeeze(0)
+                    if random.random() < exploration_eps:
+                        a = random.randrange(VectorEnv.get_action_space(robot_type))
+                    else:
+                        a = o.view(1, -1).max(1)[1].item()
+                    action[i][j] = a
+                    #output[i][j] = o.cpu().numpy()
+            if train:
+                policy_diffusion[i].train()
+    return action
+    
+
+def step(state, policy_diffusion, policy, train, robot_group_types, exploration_eps=None, debug=False, use_ground_truth_intention=False):
+    if train and use_ground_truth_intention:
+        return step_diffusion(state, policy_diffusion, robot_group_types, exploration_eps=None, debug=False)
+
+    if train:
+        # Remove ground truth intention map
+        state_copy = [[None for _ in g] for g in state]
+        for i, g in enumerate(state):
+            for j, s in enumerate(g):
+                if s is not None:
+                    state_copy[i][j] = s[:, :, :-1]
+        state = state_copy
+
+    # Add predicted intention map to state
+    state = policy.step_intention(state, debug=debug)
+    #if debug:
+    #    state, info_intention = state
+
+    return step_diffusion(state, policy_diffusion, robot_group_types, exploration_eps=exploration_eps, debug=debug)
+
+    
 def main(cfg):
     # Set up logging and checkpointing
     log_dir = Path(cfg.log_dir)
@@ -179,11 +230,27 @@ def main(cfg):
 
     # Policy
     policy = utils.get_policy_from_cfg(cfg, train=True)
-
+    beta_schedule = 'linear'
+    n_timesteps, ema_decay = 100, 0.995
+    policy_diffusion, emas, ema_models, action_dims, state_dims = [], [], [], [], []
+    for robot_type in robot_group_types:
+        state_dim = (cfg.num_input_channels-1, 96, 96)
+        num_output_channels = VectorEnv.get_num_output_channels(robot_type)
+        action_dim = (num_output_channels, 96, 96)
+        action_dims.append(action_dim)
+        state_dims.append(state_dim)
+        mlp = MLP(state_dim=state_dim, action_dim=action_dim, device=device)
+        actor = Diffusion(state_dim=state_dim, action_dim=action_dim, model=mlp, max_action=96,
+                                beta_schedule=beta_schedule, n_timesteps=n_timesteps).to(device)
+        policy_diffusion.append(actor)
+        emas.append(EMA(ema_decay))
+        ema_models.append(copy.deepcopy(actor))
     # Optimizers
     optimizers = []
     for i in range(num_robot_groups):
-        optimizers.append(optim.SGD(policy.policy_nets[i].parameters(), lr=cfg.learning_rate, momentum=0.9, weight_decay=cfg.weight_decay))
+        #optimizers.append(optim.SGD(policy.policy_nets[i].parameters(), lr=cfg.learning_rate, momentum=0.9, weight_decay=cfg.weight_decay))
+        optimizers.append(torch.optim.Adam(policy_diffusion[i].parameters(), lr=cfg.learning_rate))
+
     if cfg.use_predicted_intention:
         optimizers_intention = []
         for i in range(num_robot_groups):
@@ -214,7 +281,7 @@ def main(cfg):
     for i in range(num_robot_groups):
         target_nets[i].load_state_dict(policy.policy_nets[i].state_dict())
         target_nets[i].eval()
-
+        
     # Logging
     train_summary_writer = SummaryWriter(log_dir=str(log_dir / 'train'))
     visualization_summary_writer = SummaryWriter(log_dir=str(log_dir / 'visualization'))
@@ -229,9 +296,10 @@ def main(cfg):
         exploration_eps = 1 - (1 - cfg.final_exploration) * min(1, max(0, timestep - learning_starts) / (cfg.exploration_frac * cfg.total_timesteps))
         if cfg.use_predicted_intention:
             use_ground_truth_intention = max(0, timestep - learning_starts) / cfg.total_timesteps <= cfg.use_predicted_intention_frac
-            action = policy.step(state, exploration_eps=exploration_eps, use_ground_truth_intention=use_ground_truth_intention)
+            action = step(state, policy_diffusion, policy, train=True, robot_group_types=robot_group_types, exploration_eps=exploration_eps, use_ground_truth_intention=use_ground_truth_intention)
+            #action = policy.step(state, exploration_eps=exploration_eps, use_ground_truth_intention=use_ground_truth_intention)
         else:
-            action = policy.step(state, exploration_eps=exploration_eps)
+            action = step(state, policy_diffusion, policy, train=True, robot_group_types=robot_group_types, exploration_eps=exploration_eps)
         transition_tracker.update_action(action)
 
         # Step the simulation
