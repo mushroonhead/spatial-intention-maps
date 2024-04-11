@@ -14,7 +14,9 @@ from scipy.ndimage import rotate as rotate_image
 from scipy.ndimage.morphology import distance_transform_edt
 from skimage.draw import line
 from skimage.morphology import binary_dilation, dilation
-from skimage.morphology.footprints import disk
+#from skimage.morphology.footprints import disk
+from skimage.morphology.selem import disk
+
 
 # import vector_utils
 from shortest_paths.shortest_paths import GridGraph

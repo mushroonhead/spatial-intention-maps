@@ -25,24 +25,26 @@ class MLP(nn.Module):
         self.time_mlp = nn.Sequential(
             SinusoidalPosEmb(t_dim),
             nn.Linear(t_dim, t_dim * 2),
-            nn.Mish(),
+            nn.ReLU(),
             nn.Linear(t_dim * 2, t_dim),
         )
 
+        #input_dim = 16 + 9216 + 5*96*96 #state_dim + action_dim + t_dim
         input_dim = state_dim + action_dim + t_dim
+        
         self.mid_layer = nn.Sequential(nn.Linear(input_dim, 256),
-                                       nn.Mish(),
+                                       nn.ReLU(),
                                        nn.Linear(256, 256),
-                                       nn.Mish(),
+                                       nn.ReLU(),
                                        nn.Linear(256, 256),
-                                       nn.Mish())
+                                       nn.ReLU())
 
         self.final_layer = nn.Linear(256, action_dim)
 
-    def forward(self, x, time, state):
+    def forward(self, x, time, state: torch.Tensor):
 
         t = self.time_mlp(time)
-        x = torch.cat([x, t, state], dim=1)
+        x = torch.cat([x, t, state.flatten(start_dim=-3)], dim=1)
         x = self.mid_layer(x)
 
         return self.final_layer(x)

@@ -13,14 +13,14 @@ from agents.helpers import (cosine_beta_schedule,
                             vp_beta_schedule,
                             extract,
                             Losses)
-from utils.utils import Progress, Silent
+from agents.utils.utils import Progress, Silent
 
 from envs import VectorEnv
 
 
 class Diffusion(nn.Module):
     def __init__(self, state_dim, action_dim, model, max_action,
-                 beta_schedule='linear', n_timesteps=100, cfg,
+                 beta_schedule='linear', n_timesteps=100,
                  loss_type='l2', clip_denoised=True, predict_epsilon=True):
         super(Diffusion, self).__init__()
 
@@ -29,10 +29,10 @@ class Diffusion(nn.Module):
         self.max_action = max_action
         self.model = model
 
-        self.cfg = cfg
-        self.robot_group_types = [next(iter(g.keys())) for g in self.cfg.robot_config]
-        self.policy_nets = self.build_policy_nets()
-        self.num_robot_groups = len(self.robot_group_types)
+        #self.cfg = cfg
+        #self.robot_group_types = [next(iter(g.keys())) for g in self.cfg.robot_config]
+        #self.policy_nets = self.build_policy_nets()
+        #self.num_robot_groups = len(self.robot_group_types)
 
         if beta_schedule == 'linear':
             betas = linear_beta_schedule(n_timesteps)
@@ -75,14 +75,14 @@ class Diffusion(nn.Module):
 
         self.loss_fn = Losses[loss_type]()
     
-    def build_policy_nets(self):
+    """def build_policy_nets(self):
         policy_nets = []
         for robot_type in self.robot_group_types:
             num_output_channels = VectorEnv.get_num_output_channels(robot_type)
             policy_nets.append(torch.nn.DataParallel(
                 networks.FCN(num_input_channels=self.cfg.num_input_channels, num_output_channels=num_output_channels)
             ).to(self.device))
-        return policy_nets
+        return policy_nets"""
 
     # ------------------------------------------ sampling ------------------------------------------#
 
@@ -112,8 +112,8 @@ class Diffusion(nn.Module):
         x_recon = self.predict_start_from_noise(x, t=t, noise=self.model(x, t, s))
 
         if self.clip_denoised:
-            #x_recon.clamp_(-self.max_action, self.max_action)
-            x_recon.clamp_(0, self.max_action)
+            x_recon.clamp_(-self.max_action, self.max_action)
+            #x_recon.clamp_(0, self.max_action)
         else:
             assert RuntimeError()
 
@@ -159,8 +159,8 @@ class Diffusion(nn.Module):
         batch_size = state.shape[0]
         shape = (batch_size, self.action_dim)
         action = self.p_sample_loop(state, shape, *args, **kwargs)
-        #return action.clamp_(-self.max_action, self.max_action)
-        return action.clamp_(0, self.max_action)
+        return action.clamp_(-self.max_action, self.max_action)
+        #return action.clamp_(0, self.max_action)
 
     # ------------------------------------------ training ------------------------------------------#
 
