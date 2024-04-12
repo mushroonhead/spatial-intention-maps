@@ -161,20 +161,14 @@ def train_diffusion(cfg, policy_diffusion, target_net, optimizer, batch, transfo
     action_batch_single_num = torch.tensor(batch.action, dtype=torch.long).to(device)  # (32,)
     reward_batch = torch.tensor(batch.reward, dtype=torch.float32).to(device)  # (32,)
 
-    action_batch = torch.zeros((action_batch_single_num.shape[0], 96*96), dtype=torch.long).to(device)
-    for i in range(action_batch.shape[0]):
-        action_batch[i,action_batch_single_num[i]] = 1
+    action_batch_vector = torch.zeros((action_batch_single_num.shape[0], 96*96), dtype=torch.long).to(device)
+    for i in range(action_batch_vector.shape[0]):
+        action_batch_vector[i,action_batch_single_num[i]] = 1
 
-    # print(f"state_batch shape: {state_batch.shape}")
-    # print(f"action_batch shape: {action_batch.shape}")
     non_final_next_states = torch.cat([transform_fn(s) for s in batch.next_state if s is not None]).to(device, non_blocking=True)  # (<=32, 4, 96, 96)
 
     output = policy_diffusion(state_batch) #policy_net(state_batch)  # (32, 2, 96, 96)
-    # print(f"output shape: {output.shape}")     
-    # print(f"action batch: {action_batch.unsqueeze(1).shape}")
-    # print(f"cfg batch size: {cfg.batch_size}")
-    state_action_values = output.view(cfg.batch_size, 1, -1).gather(1, action_batch.unsqueeze(1)).squeeze(1)  # (32,)
-    # print(f"state_Action_value: {state_action_values.shape}")
+    state_action_values = output.view(cfg.batch_size, -1).gather(1, action_batch_single_num.unsqueeze(1)).squeeze(1)  # (32,)
     next_state_values = torch.zeros(cfg.batch_size, dtype=torch.float32, device=device)  # (32,)
     non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), dtype=torch.bool, device=device)  # (32,)
 
@@ -188,7 +182,7 @@ def train_diffusion(cfg, policy_diffusion, target_net, optimizer, batch, transfo
     expected_state_action_values = (reward_batch + discount_factor * next_state_values)  # (32,)
     td_error = torch.abs(state_action_values - expected_state_action_values).detach()  # (32,)
 
-    bc_loss = policy_diffusion.loss(action_batch.to(torch.float32),state_batch)
+    bc_loss = policy_diffusion.loss(action_batch_vector.to(torch.float32),state_batch)
     loss = bc_loss + smooth_l1_loss(state_action_values, expected_state_action_values)
 
     optimizer.zero_grad()
