@@ -102,7 +102,10 @@ class Meters:
         return self.meters.keys()
 
     def reset(self):
-        for meter in self.meters.values():self
+        for meter in self.meters.values():
+            meter.reset()
+
+    def update(self, name, val):
         if name not in self.meters:
             self.meters[name] = AverageMeter()
         self.meters[name].update(val)
@@ -155,12 +158,23 @@ def build_intention_nets(num_robot_groups,num_input_channels):
 
 def train_diffusion(cfg, policy_diffusion, target_net, optimizer, batch, transform_fn, discount_factor):
     state_batch = torch.cat([transform_fn(s) for s in batch.state]).to(device)  # (32, 4, 96, 96)
-    action_batch = torch.tensor(batch.action, dtype=torch.long).to(device)  # (32,)
+    action_batch_single_num = torch.tensor(batch.action, dtype=torch.long).to(device)  # (32,)
     reward_batch = torch.tensor(batch.reward, dtype=torch.float32).to(device)  # (32,)
+
+    action_batch = torch.zeros((action_batch_single_num.shape[0], 96*96), dtype=torch.long).to(device)
+    for i in range(action_batch.shape[0]):
+        action_batch[i,action_batch_single_num[i]] = 1
+
+    # print(f"state_batch shape: {state_batch.shape}")
+    # print(f"action_batch shape: {action_batch.shape}")
     non_final_next_states = torch.cat([transform_fn(s) for s in batch.next_state if s is not None]).to(device, non_blocking=True)  # (<=32, 4, 96, 96)
 
-    output = policy_diffusion(state_batch) #policy_net(state_batch)  # (32, 2, 96, 96)     
-    state_action_values = output.view(cfg.batch_size, -1).gather(1, action_batch.unsqueeze(1)).squeeze(1)  # (32,)
+    output = policy_diffusion(state_batch) #policy_net(state_batch)  # (32, 2, 96, 96)
+    # print(f"output shape: {output.shape}")     
+    # print(f"action batch: {action_batch.unsqueeze(1).shape}")
+    # print(f"cfg batch size: {cfg.batch_size}")
+    state_action_values = output.view(cfg.batch_size, 1, -1).gather(1, action_batch.unsqueeze(1)).squeeze(1)  # (32,)
+    # print(f"state_Action_value: {state_action_values.shape}")
     next_state_values = torch.zeros(cfg.batch_size, dtype=torch.float32, device=device)  # (32,)
     non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), dtype=torch.bool, device=device)  # (32,)
 
@@ -174,7 +188,7 @@ def train_diffusion(cfg, policy_diffusion, target_net, optimizer, batch, transfo
     expected_state_action_values = (reward_batch + discount_factor * next_state_values)  # (32,)
     td_error = torch.abs(state_action_values - expected_state_action_values).detach()  # (32,)
 
-    bc_loss = policy_diffusion.loss(action_batch,state_batch)
+    bc_loss = policy_diffusion.loss(action_batch.to(torch.float32),state_batch)
     loss = bc_loss + smooth_l1_loss(state_action_values, expected_state_action_values)
 
     optimizer.zero_grad()
@@ -301,10 +315,10 @@ def main(cfg):
     policy_diffusion, emas, ema_models, action_dims, state_dims = [], [], [], [], []
     for robot_type in robot_group_types:
         #state_dim = (cfg.num_input_channels-1, 96, 96)
-        state_dim = (cfg.num_input_channels) * 96 *96
+        state_dim = (cfg.num_input_channels) * 96 *96 # TODO array not vector 
         num_output_channels = VectorEnv.get_num_output_channels(robot_type)
         #action_dim = (num_output_channels, 96, 96)
-        action_dim = num_output_channels*96*96
+        action_dim = num_output_channels*96*96 # TODO array not vector
         #action_dims.append(action_dim)
         #state_dims.append(state_dim)
         mlp = MLP(state_dim=state_dim, action_dim=action_dim, device=device)
