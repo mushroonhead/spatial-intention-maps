@@ -5,7 +5,7 @@
 #SBATCH --account=eecs602w24_class         	# account (check with $ my_accounts)
 #SBATCH --partition=spgpu                   # (Submit to partition: standard, gpu. viz, largemem, oncampus, debug)
 #SBATCH --gres=gpu:1                      	# GPUs per node
-#SBATCH --time=0-6:00:00                    # total run time limit (dd-hh:mm:ss)
+#SBATCH --time=0-16:00:00                    # total run time limit (dd-hh:mm:ss)
 #SBATCH --nodes=1                         	# node count
 #SBATCH --tasks-per-node=1                	# total number of tasks across all nodes
 #SBATCH --cpus-per-task=1                 	# cpu-cores per task (>1 if multi-threaded tasks)
