@@ -309,13 +309,15 @@ def main(cfg):
     policy_diffusion, emas, ema_models, action_dims, state_dims = [], [], [], [], []
     for robot_type in robot_group_types:
         #state_dim = (cfg.num_input_channels-1, 96, 96)
-        state_dim = (cfg.num_input_channels) * 96 *96 # TODO array not vector 
+        state_dim =  96 *96 # jpk, final state dimension will have 1 channel after applying resnet
         num_output_channels = VectorEnv.get_num_output_channels(robot_type)
         #action_dim = (num_output_channels, 96, 96)
         action_dim = num_output_channels*96*96 # TODO array not vector
         #action_dims.append(action_dim)
         #state_dims.append(state_dim)
-        mlp = MLP(state_dim=state_dim, action_dim=action_dim, device=device)
+        num_input_channels = cfg.num_input_channels # jpk
+        mlp = MLP(state_dim=state_dim, action_dim=action_dim, 
+                  num_input_channels=num_input_channels, num_output_channels=num_output_channels, device=device) # jpk
         actor = Diffusion(state_dim=state_dim, action_dim=action_dim, model=mlp, max_action=1000.0,
                                 beta_schedule=beta_schedule, n_timesteps=n_timesteps).to(device)
         policy_diffusion.append(actor)
