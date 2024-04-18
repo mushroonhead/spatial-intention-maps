@@ -165,6 +165,16 @@ def train_diffusion(cfg, policy_diffusion, target_net, optimizer, batch, transfo
     for i in range(action_batch_vector.shape[0]):
         action_batch_vector[i,action_batch_single_num[i]] = 1
 
+    # jpk, ran into an error before that batch.next_state was all None
+    # this is designed to fix that. TODO: investigate this further
+    if all(v is None for v in batch.next_state):
+        print("ERROR: line 169, all batch.next_state are None")
+        train_info = {}
+        train_info['td_error'] = 0.0
+        train_info['loss'] = 0.0
+        return train_info
+    # jpk
+
     non_final_next_states = torch.cat([transform_fn(s) for s in batch.next_state if s is not None]).to(device, non_blocking=True)  # (<=32, 4, 96, 96)
 
     output = policy_diffusion(state_batch) #policy_net(state_batch)  # (32, 2, 96, 96)
