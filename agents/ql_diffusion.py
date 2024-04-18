@@ -7,7 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from utils.logger import logger
+from torchvision import transforms
+#from utils.logger import logger
 
 from agents.diffusion import Diffusion
 from agents.model import MLP
@@ -18,27 +19,28 @@ class Critic(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim=256):
         super(Critic, self).__init__()
         self.q1_model = nn.Sequential(nn.Linear(state_dim + action_dim, hidden_dim),
-                                      nn.Mish(),
+                                      nn.ReLU(),
                                       nn.Linear(hidden_dim, hidden_dim),
-                                      nn.Mish(),
+                                      nn.ReLU(),
                                       nn.Linear(hidden_dim, hidden_dim),
-                                      nn.Mish(),
+                                      nn.ReLU(),
                                       nn.Linear(hidden_dim, 1))
 
         self.q2_model = nn.Sequential(nn.Linear(state_dim + action_dim, hidden_dim),
-                                      nn.Mish(),
+                                      nn.ReLU(),
                                       nn.Linear(hidden_dim, hidden_dim),
-                                      nn.Mish(),
+                                      nn.ReLU(),
                                       nn.Linear(hidden_dim, hidden_dim),
-                                      nn.Mish(),
+                                      nn.ReLU(),
                                       nn.Linear(hidden_dim, 1))
 
     def forward(self, state, action):
-        x = torch.cat([state, action], dim=-1)
+        #print(state.shape,action.shape)
+        x = torch.cat([state.flatten(start_dim=-3), action], dim=-1)
         return self.q1_model(x), self.q2_model(x)
 
     def q1(self, state, action):
-        x = torch.cat([state, action], dim=-1)
+        x = torch.cat([state.flatten(start_dim=-3), action], dim=-1)
         return self.q1_model(x)
 
     def q_min(self, state, action):
@@ -99,17 +101,43 @@ class Diffusion_QL(object):
         self.device = device
         self.max_q_backup = max_q_backup
 
+        self.transform = transforms.ToTensor()
+
+    def apply_transform(self, s):
+        return self.transform(s).unsqueeze(0)
+
     def step_ema(self):
         if self.step < self.step_start_ema:
             return
         self.ema.update_model_average(self.ema_model, self.actor)
 
+    
     def train(self, replay_buffer, iterations, batch_size=100, log_writer=None):
 
-        metric = {'bc_loss': [], 'ql_loss': [], 'actor_loss': [], 'critic_loss': []}
+        #metric = {'bc_loss': [], 'ql_loss': [], 'actor_loss': [], 'critic_loss': []}
         for _ in range(iterations):
             # Sample replay buffer / batch
-            state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
+            #state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
+            batch = replay_buffer.sample(batch_size)
+            #print(batch.action)
+            state = torch.cat([self.apply_transform(s) for s in batch.state]).to(self.device)  # (32, 4, 96, 96)
+            action_indx = torch.tensor(batch.action, dtype=torch.long).to(self.device)  # (32,)
+            reward = torch.tensor(batch.reward, dtype=torch.float32).to(self.device)  # (32,)
+
+            next_state = torch.cat([self.apply_transform(s) for s in batch.next_state]).to(self.device)
+            not_done = [[None for _ in g] for g in batch.next_state]
+            for i, s in enumerate(batch.next_state):
+                if s is not None:
+                    not_done[i] = 1.0 
+                else:
+                    not_done[i] = 0.0
+        
+                #torch.cat([1.0 if s is not None else 0.0]).to(self.device)
+
+            action = torch.zeros((action_indx.shape[0], 96*96), dtype=torch.float32,device = self.device)
+            for i in range(action_indx.shape[0]):
+                action[i,action_indx[i]] = 1.0
+            
 
             """ Q Training """
             current_q1, current_q2 = self.critic(state, action)
@@ -124,10 +152,13 @@ class Diffusion_QL(object):
             else:
                 next_action = self.ema_model(next_state)
                 target_q1, target_q2 = self.critic_target(next_state, next_action)
+                #print(next_action.shape,next_state.shape, target_q1.shape,target_q2.shape)
                 target_q = torch.min(target_q1, target_q2)
+                
+            #print(reward.shape,target_q.shape,torch.tensor(not_done,device=self.device).shape)
+            target_q = (reward.unsqueeze(1) + torch.tensor(not_done,device=self.device).unsqueeze(1) * self.discount * target_q).detach()
 
-            target_q = (reward + not_done * self.discount * target_q).detach()
-
+            #print(current_q1.shape, target_q.shape)
             critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
 
             self.critic_optimizer.zero_grad()
@@ -173,17 +204,24 @@ class Diffusion_QL(object):
                 log_writer.add_scalar('Critic Loss', critic_loss.item(), self.step)
                 log_writer.add_scalar('Target_Q Mean', target_q.mean().item(), self.step)
 
-            metric['actor_loss'].append(actor_loss.item())
-            metric['bc_loss'].append(bc_loss.item())
-            metric['ql_loss'].append(q_loss.item())
-            metric['critic_loss'].append(critic_loss.item())
+            #metric['actor_loss'].append(actor_loss.item())
+            #metric['bc_loss'].append(bc_loss.item())
+            #metric['ql_loss'].append(q_loss.item())
+            #metric['critic_loss'].append(critic_loss.item())
+            metric = {}
+            metric['actor_loss'] = actor_loss.item()
+            metric['bc_loss'] = bc_loss.item()
+            metric['ql_loss'] = q_loss.item()
+            metric['critic_loss'] = critic_loss.item()
+
+            print(metric)
 
         if self.lr_decay: 
             self.actor_lr_scheduler.step()
             self.critic_lr_scheduler.step()
 
         return metric
-
+    
     def sample_action(self, state):
         state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
         state_rpt = torch.repeat_interleave(state, repeats=50, dim=0)
@@ -208,5 +246,31 @@ class Diffusion_QL(object):
         else:
             self.actor.load_state_dict(torch.load(f'{dir}/actor.pth'))
             self.critic.load_state_dict(torch.load(f'{dir}/critic.pth'))
+
+    """def step(self, state, VectorEnv_action_space, exploration_eps=None):
+        action = [[None for _ in g] for g in state]
+        with torch.no_grad():
+            for i, g in enumerate(state):
+                #robot_type = robot_group_types[i]
+                #diffusion_models[i].eval()
+                self.actor.eval()
+                for j, s in enumerate(g):
+                    if s is not None:
+                        s = transforms.ToTensor()(s).unsqueeze(0).to(device=self.device,dtype=torch.float32)
+                        #print(s)
+                        o = self.actor.sample(s).squeeze(0)
+                        if random.random() < exploration_eps:
+                            #a = random.randrange(VectorEnv.get_action_space(robot_type))
+                            a = random.randrange(VectorEnv_action_space)
+                        else:
+                            a = o.view(1, -1).max(1)[1].item()
+                        action[i][j] = a
+                        #output[i][j] = o.cpu().numpy()
+                if self.train:
+                    #policy_diffusion[i].train()
+                    self.actor.train()
+        return action """
+
+
 
 
