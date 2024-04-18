@@ -114,60 +114,6 @@ class Meters:
     def avg(self, name):
         return self.meters[name].avg
 
-
-def train(cfg, policy_net, target_net, optimizer, batch, transform_fn, discount_factor):
-    state_batch = torch.cat([transform_fn(s) for s in batch.state]).to(device)  # (32, 4, 96, 96)
-    action_batch = torch.tensor(batch.action, dtype=torch.long).to(device)  # (32,)
-    reward_batch = torch.tensor(batch.reward, dtype=torch.float32).to(device)  # (32,)
-    non_final_next_states = torch.cat([transform_fn(s) for s in batch.next_state if s is not None]).to(device, non_blocking=True)  # (<=32, 4, 96, 96)
-
-    output = policy_net(state_batch)  # (32, 2, 96, 96)
-    state_action_values = output.view(cfg.batch_size, -1).gather(1, action_batch.unsqueeze(1)).squeeze(1)  # (32,)
-    next_state_values = torch.zeros(cfg.batch_size, dtype=torch.float32, device=device)  # (32,)
-    non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), dtype=torch.bool, device=device)  # (32,)
-
-    if cfg.use_double_dqn:
-        with torch.no_grad():
-            best_action = policy_net(non_final_next_states).view(non_final_next_states.size(0), -1).max(1)[1].view(non_final_next_states.size(0), 1)  # (<=32, 1)
-            next_state_values[non_final_mask] = target_net(non_final_next_states).view(non_final_next_states.size(0), -1).gather(1, best_action).view(-1)  # (<=32,)
-    else:
-        next_state_values[non_final_mask] = target_net(non_final_next_states).view(non_final_next_states.size(0), -1).max(1)[0].detach()  # (<=32,)
-
-    expected_state_action_values = (reward_batch + discount_factor * next_state_values)  # (32,)
-    td_error = torch.abs(state_action_values - expected_state_action_values).detach()  # (32,)
-
-    loss = smooth_l1_loss(state_action_values, expected_state_action_values)
-
-    optimizer.zero_grad()
-    loss.backward()
-    if cfg.grad_norm_clipping is not None:
-        torch.nn.utils.clip_grad_norm_(policy_net.parameters(), cfg.grad_norm_clipping)
-    optimizer.step()
-
-    train_info = {}
-    train_info['td_error'] = td_error.mean().item()
-    train_info['loss'] = loss.item()
-
-    return train_info
-
-def train_intention(intention_net, optimizer, batch, transform_fn):
-    # Expects last channel of the state representation to be the ground truth intention map
-    state_batch = torch.cat([transform_fn(s[:, :, :-1]) for s in batch.state]).to(device)  # (32, 4 or 5, 96, 96)
-    target_batch = torch.cat([transform_fn(s[:, :, -1:]) for s in batch.state]).to(device)  # (32, 1, 96, 96)
-
-    output = intention_net(state_batch)  # (32, 2, 96, 96)
-    criterion = nn.BCEWithLogitsLoss()
-    loss = criterion(output, target_batch)
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-
-    train_info = {}
-    train_info['loss_intention'] = loss.item()
-
-    return train_info
-
-
 #### policy utils ###
 
 def build_diff_trainer(cfg, robot_type,
@@ -260,8 +206,9 @@ def query_actions(states: Iterable[Iterable],
                 group_i_actions.append(action)
                 group_i_outputs.append(output)
             actions.append(group_i_actions)
+            outputs.append(group_i_outputs)
 
-    info = {'output':output} if debug else {}
+    info = {'output':outputs} if debug else {}
 
     return actions, info
 
