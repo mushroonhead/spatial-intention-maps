@@ -17,6 +17,8 @@ class QMapDiffusion(torch.nn.Module):
                  conditional_encoder: torch.nn.Module,
                  noise_scheduler: SchedulerMixin,
                  ema: Optional[EMAModel],
+                 tensor_kwargs: dict,
+                 tensor_kwargs: dict,
                  *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.inp_channel = inp_channel
@@ -29,7 +31,7 @@ class QMapDiffusion(torch.nn.Module):
         self.noise_scheduler = noise_scheduler
         self.noise_scheduler.set_timesteps(self.num_diffusion_iter)
         self.ema = ema
-        self.tensor_kwargs
+        self.tensor_kwargs = tensor_kwargs
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -159,11 +161,10 @@ class TDErrorQMapDiffTrainer(QMapDiffTrainerBase):
         - Returns:
             - info: dict, any loss or metric info to be tracked
         """
-
-        # standard dqn td error training
+        # standard dqn td error training (here we assume r to be determined only on s,a)
         with torch.no_grad():
-            target_q_map = rewards + self.discount_factor * non_final_state_mask \
-                * self.target_policy(non_final_next_states).detach()
+            target_q_map = rewards
+            target_q_map[non_final_state_mask] += self.discount_factor * self.target_policy(non_final_next_states).detach()
         pred_q_map = self.policy(state_map)
 
         td_loss: torch.Tensor = self.qmap_loss(pred_q_map, target_q_map)

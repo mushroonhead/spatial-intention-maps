@@ -118,6 +118,7 @@ class Meters:
 
 def build_diff_trainer(cfg, robot_type,
                        height=96, width=96, num_diffusion_iter=100):
+    tensor_kwargs = {'device':device,'dtype':torch.float32}
     # dim
     state_channel = cfg.num_input_channels
     action_channel = VectorEnv.get_action_space(robot_type)
@@ -127,7 +128,7 @@ def build_diff_trainer(cfg, robot_type,
                      *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             self.net = resnet18(num_input_channels=inp_channel,
-                                feature_channel=feature_channel)
+                                num_classes=feature_channel)
 
         def forward(self, x):
             return self.net(x)[...,None,:]
@@ -151,7 +152,8 @@ def build_diff_trainer(cfg, robot_type,
         noise_model=noise_model,
         conditional_encoder=conditional_encoder,
         noise_scheduler=noise_scheduler,
-        ema=ema)
+        ema=ema,
+        tensor_kwargs=tensor_kwargs)
     # trainer
     trainer = TDErrorQMapDiffTrainer(
         diff_model=policy,
