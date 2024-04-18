@@ -124,13 +124,8 @@ class Diffusion_QL(object):
             action_indx = torch.tensor(batch.action, dtype=torch.long).to(self.device)  # (32,)
             reward = torch.tensor(batch.reward, dtype=torch.float32).to(self.device)  # (32,)
 
-            next_state = torch.cat([self.apply_transform(s) for s in batch.next_state]).to(self.device)
-            not_done = [[None for _ in g] for g in batch.next_state]
-            for i, s in enumerate(batch.next_state):
-                if s is not None:
-                    not_done[i] = 1.0 
-                else:
-                    not_done[i] = 0.0
+            next_state_not_done = torch.cat([self.apply_transform(s) for s in batch.next_state if s is not None]).to(self.device)  #(<=32)
+            not_done = [s is not None for s in batch.next_state]
         
                 #torch.cat([1.0 if s is not None else 0.0]).to(self.device)
 
@@ -143,20 +138,22 @@ class Diffusion_QL(object):
             current_q1, current_q2 = self.critic(state, action)
 
             if self.max_q_backup:
-                next_state_rpt = torch.repeat_interleave(next_state, repeats=10, dim=0)
+                next_state_rpt = torch.repeat_interleave(next_state_not_done, repeats=10, dim=0)
                 next_action_rpt = self.ema_model(next_state_rpt)
-                target_q1, target_q2 = self.critic_target(next_state_rpt, next_action_rpt)
-                target_q1 = target_q1.view(batch_size, 10).max(dim=1, keepdim=True)[0]
-                target_q2 = target_q2.view(batch_size, 10).max(dim=1, keepdim=True)[0]
-                target_q = torch.min(target_q1, target_q2)
+                target_q1_not_done, target_q2_not_done = self.critic_target(next_state_rpt, next_action_rpt)
+                target_q1_not_done = target_q1_not_done.view(batch_size, 10).max(dim=1, keepdim=True)[0]
+                target_q2_not_done = target_q2_not_done.view(batch_size, 10).max(dim=1, keepdim=True)[0]
+                target_q_not_done = torch.min(target_q1_not_done, target_q2_not_done)
             else:
-                next_action = self.ema_model(next_state)
-                target_q1, target_q2 = self.critic_target(next_state, next_action)
+                next_action_not_done = self.ema_model(next_state_not_done)
+                target_q1_not_done, target_q2_not_done = self.critic_target(next_state_not_done, next_action_not_done)
                 #print(next_action.shape,next_state.shape, target_q1.shape,target_q2.shape)
-                target_q = torch.min(target_q1, target_q2)
+                target_q_not_done = torch.min(target_q1_not_done, target_q2_not_done)
                 
             #print(reward.shape,target_q.shape,torch.tensor(not_done,device=self.device).shape)
-            target_q = (reward.unsqueeze(1) + torch.tensor(not_done,device=self.device).unsqueeze(1) * self.discount * target_q).detach()
+            target_q = reward.unsqueeze(-1)
+            #print('t',target_q.shape, target_q_not_done.shape)
+            target_q[not_done] += self.discount * target_q_not_done.detach()
 
             #print(current_q1.shape, target_q.shape)
             critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
@@ -202,7 +199,7 @@ class Diffusion_QL(object):
                 log_writer.add_scalar('BC Loss', bc_loss.item(), self.step)
                 log_writer.add_scalar('QL Loss', q_loss.item(), self.step)
                 log_writer.add_scalar('Critic Loss', critic_loss.item(), self.step)
-                log_writer.add_scalar('Target_Q Mean', target_q.mean().item(), self.step)
+                log_writer.add_scalar('Target_Q Mean', target_q_not_done.mean().item(), self.step)
 
             #metric['actor_loss'].append(actor_loss.item())
             #metric['bc_loss'].append(bc_loss.item())
