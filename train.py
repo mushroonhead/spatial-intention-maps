@@ -179,7 +179,6 @@ def step_diffusion_model(state, diffusion_models, robot_group_types, train = Tru
             for j, s in enumerate(g):
                 if s is not None:
                     s = transforms.ToTensor()(s).unsqueeze(0).to(device=device,dtype=torch.float32)
-                    #print(s)
                     o = diffusion_models[i].actor.sample(s).squeeze(0)
                     if random.random() < exploration_eps:
                         a = random.randrange(VectorEnv.get_action_space(robot_type))
@@ -237,15 +236,23 @@ def main(cfg):
 
     # Policy
     policy = utils.get_policy_from_cfg(cfg, train=True)
+
+    # TODO: To put into configuration file
+    one_channel_state_dim = 96*96
+    num_input_channels = (cfg.num_input_channels) 
+    state_dim = num_input_channels * one_channel_state_dim 
+    discount = 0.99 #default values from QL diffusion
+    tau = 0.05 #default values from QL diffusion
+    
     diffusion_models = []
     for robot_type in robot_group_types:
-        state_dim = (cfg.num_input_channels) * 96 *96 # TODO array not vector 
         num_output_channels = VectorEnv.get_num_output_channels(robot_type)
-        action_dim = num_output_channels*96*96 # TODO array not vector
-        discount = 0.99 #default values from QL diffusion
-        tau = 0.05 #default values from QL diffusion
+        action_dim = num_output_channels*one_channel_state_dim 
         agent = Diffusion_QL(state_dim=state_dim,
                  action_dim=action_dim,
+                 fcn_input_channels = num_input_channels, 
+                 fcn_output_channels = num_output_channels,
+                 one_channel_state_dim = one_channel_state_dim,
                  max_action=1000.0,
                  device=device,
                  discount=discount,

@@ -52,6 +52,9 @@ class Diffusion_QL(object):
     def __init__(self,
                  state_dim,
                  action_dim,
+                 fcn_input_channels,
+                 fcn_output_channels,
+                 one_channel_state_dim,
                  max_action,
                  device,
                  discount,
@@ -69,7 +72,9 @@ class Diffusion_QL(object):
                  grad_norm=1.0,
                  ):
 
-        self.model = MLP(state_dim=state_dim, action_dim=action_dim, device=device)
+        self.model = MLP(state_dim=state_dim, action_dim=action_dim, 
+                        fcn_input_channels=fcn_input_channels, fcn_output_channels=fcn_output_channels,
+                        one_channel_state_dim=one_channel_state_dim, device=device)
 
         self.actor = Diffusion(state_dim=state_dim, action_dim=action_dim, model=self.model, max_action=max_action,
                                beta_schedule=beta_schedule, n_timesteps=n_timesteps,).to(device)
