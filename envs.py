@@ -15,7 +15,7 @@ from scipy.ndimage.morphology import distance_transform_edt
 from skimage.draw import line
 from skimage.morphology import binary_dilation, dilation
 #from skimage.morphology.footprints import disk
-from skimage.morphology.selem import disk
+from skimage.morphology.footprints import disk
 
 
 # import vector_utils

@@ -36,7 +36,7 @@ class MLP(nn.Module):
         self.time_mlp = nn.Sequential(
             SinusoidalPosEmb(t_dim),
             nn.Linear(t_dim, t_dim * 2),
-            nn.ReLU(),
+            nn.Mish(),
             nn.Linear(t_dim * 2, t_dim),
         )
 
@@ -44,11 +44,11 @@ class MLP(nn.Module):
         input_dim = fcn_output_channels*one_channel_state_dim + action_dim + t_dim
         
         self.mid_layer = nn.Sequential(nn.Linear(input_dim, 256),
-                                       nn.ReLU(),
+                                       nn.Mish(),
                                        nn.Linear(256, 256),
-                                       nn.ReLU(),
+                                       nn.Mish(),
                                        nn.Linear(256, 256),
-                                       nn.ReLU())
+                                       nn.Mish())
 
         self.final_layer = nn.Linear(256, action_dim)
 
