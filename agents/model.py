@@ -51,8 +51,7 @@ class MLP(nn.Module):
 
         self.final_layer = nn.Linear(256, action_dim)
 
-    def forward(self, x, time, state: torch.Tensor):
-
+    def state_through_resnet(self, state):
         # jpk changes start
         state = self.resnet18.features(state)
         state = self.conv1(state)
@@ -68,6 +67,10 @@ class MLP(nn.Module):
             raise Exception("ERROR: state dimension is not batch_size * 1 * 96 * 96, error is in model.py")
 
         # jpk changes end
+
+        return state
+    
+    def forward(self, x, time, state: torch.Tensor):
 
         t = self.time_mlp(time)
         x = torch.cat([x, t, state.flatten(start_dim=-3)], dim=1)

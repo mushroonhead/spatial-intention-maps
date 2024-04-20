@@ -112,7 +112,7 @@ class Diffusion(nn.Module):
         x_recon = self.predict_start_from_noise(x, t=t, noise=self.model(x, t, s))
 
         if self.clip_denoised:
-            x_recon.clamp_(-self.max_action, self.max_action)
+            x_recon.clamp_(0.0, self.max_action)
             #x_recon.clamp_(0, self.max_action)
         else:
             assert RuntimeError()
@@ -139,6 +139,7 @@ class Diffusion(nn.Module):
         if return_diffusion: diffusion = [x]
 
         progress = Progress(self.n_timesteps) if verbose else Silent()
+        state = self.model.state_through_resnet(state)
         for i in reversed(range(0, self.n_timesteps)):
             timesteps = torch.full((batch_size,), i, device=device, dtype=torch.long)
             x = self.p_sample(x, timesteps, state)
@@ -159,7 +160,7 @@ class Diffusion(nn.Module):
         batch_size = state.shape[0]
         shape = (batch_size, self.action_dim)
         action = self.p_sample_loop(state, shape, *args, **kwargs)
-        return action.clamp_(-self.max_action, self.max_action)
+        return action.clamp_(0.0, self.max_action)
         #return action.clamp_(0, self.max_action)
 
     # ------------------------------------------ training ------------------------------------------#
@@ -179,7 +180,7 @@ class Diffusion(nn.Module):
         noise = torch.randn_like(x_start)
 
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-
+        state = self.model.state_through_resnet(state)
         x_recon = self.model(x_noisy, t, state)
 
         assert noise.shape == x_recon.shape

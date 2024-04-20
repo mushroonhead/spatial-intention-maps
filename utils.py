@@ -157,8 +157,8 @@ def enlarge_image(image, scale_factor=4):
 # Policies
 
 def get_policy_from_cfg(cfg, *args, **kwargs):
-    #policy_cls = DQNIntentionPolicy if cfg.use_predicted_intention else DQNPolicy
-    policy_cls = DQNIntentionPolicy
+    policy_cls = DQNIntentionPolicy if cfg.use_predicted_intention else DQNPolicy
+    #policy_cls = DQNIntentionPolicy
     return policy_cls(cfg, *args, **kwargs)
 
 ################################################################################

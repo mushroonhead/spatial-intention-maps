@@ -171,7 +171,8 @@ def train_diffusion(cfg, policy_diffusion, target_net, optimizer, batch, transfo
         print("ERROR: line 169, all batch.next_state are None")
         train_info = {}
         train_info['td_error'] = 0.0
-        train_info['loss'] = 0.0
+        train_info['diffusion_loss'] = 0.0
+        train_info['dqn_loss'] = 0.0
         return train_info
     # jpk
 
@@ -192,8 +193,9 @@ def train_diffusion(cfg, policy_diffusion, target_net, optimizer, batch, transfo
     expected_state_action_values = (reward_batch + discount_factor * next_state_values)  # (32,)
     td_error = torch.abs(state_action_values - expected_state_action_values).detach()  # (32,)
 
-    bc_loss = policy_diffusion.loss(action_batch_vector.to(torch.float32),state_batch)
-    loss = bc_loss + smooth_l1_loss(state_action_values, expected_state_action_values)
+    diffusion_loss = policy_diffusion.loss(action_batch_vector.to(torch.float32),state_batch)
+    dqn_loss = smooth_l1_loss(state_action_values, expected_state_action_values)
+    loss = diffusion_loss + dqn_loss
 
     optimizer.zero_grad()
     loss.backward()
@@ -203,7 +205,8 @@ def train_diffusion(cfg, policy_diffusion, target_net, optimizer, batch, transfo
 
     train_info = {}
     train_info['td_error'] = td_error.mean().item()
-    train_info['loss'] = loss.item()
+    train_info['diffusion_loss'] = diffusion_loss.item()
+    train_info['dqn_loss'] = dqn_loss.item()
 
     return train_info
 
@@ -293,6 +296,7 @@ def step_diffusion_wrapper(state, policy_diffusion, policy, train, robot_group_t
 
     
 def main(cfg):
+    policy = utils.get_policy_from_cfg(cfg)
     # Set up logging and checkpointing
     log_dir = Path(cfg.log_dir)
     checkpoint_dir = Path(cfg.checkpoint_dir)
@@ -328,7 +332,7 @@ def main(cfg):
         num_input_channels = cfg.num_input_channels # jpk
         mlp = MLP(state_dim=state_dim, action_dim=action_dim, 
                   num_input_channels=num_input_channels, num_output_channels=num_output_channels, device=device) # jpk
-        actor = Diffusion(state_dim=state_dim, action_dim=action_dim, model=mlp, max_action=1000.0,
+        actor = Diffusion(state_dim=state_dim, action_dim=action_dim, model=mlp, max_action=1.0,
                                 beta_schedule=beta_schedule, n_timesteps=n_timesteps).to(device)
         policy_diffusion.append(actor)
         emas.append(EMA(ema_decay))
@@ -383,12 +387,13 @@ def main(cfg):
     for timestep in tqdm(range(start_timestep, total_timesteps_with_warm_up), initial=start_timestep, total=total_timesteps_with_warm_up, file=sys.stdout):
         # Select an action for each robot
         exploration_eps = 1 - (1 - cfg.final_exploration) * min(1, max(0, timestep - learning_starts) / (cfg.exploration_frac * cfg.total_timesteps))
-        if cfg.use_predicted_intention:
-            use_ground_truth_intention = max(0, timestep - learning_starts) / cfg.total_timesteps <= cfg.use_predicted_intention_frac
-            action = step_diffusion_wrapper(state, policy_diffusion, policy, train=True, robot_group_types=robot_group_types, exploration_eps=exploration_eps, use_ground_truth_intention=use_ground_truth_intention)
-            #action = policy.step(state, exploration_eps=exploration_eps, use_ground_truth_intention=use_ground_truth_intention)
-        else:
-            action = step_diffusion_wrapper(state, policy_diffusion, policy, train=True, robot_group_types=robot_group_types, exploration_eps=exploration_eps)
+        # if cfg.use_predicted_intention:
+        #     use_ground_truth_intention = max(0, timestep - learning_starts) / cfg.total_timesteps <= cfg.use_predicted_intention_frac
+        #     action = step_diffusion_wrapper(state, policy_diffusion, policy, train=True, robot_group_types=robot_group_types, exploration_eps=exploration_eps, use_ground_truth_intention=use_ground_truth_intention)
+        #     #action = policy.step(state, exploration_eps=exploration_eps, use_ground_truth_intention=use_ground_truth_intention)
+        # else:
+        #     action = step_diffusion_wrapper(state, policy_diffusion, policy, train=True, robot_group_types=robot_group_types, exploration_eps=exploration_eps)
+        action = policy.step(state)
         transition_tracker.update_action(action)
 
         # Step the simulation
