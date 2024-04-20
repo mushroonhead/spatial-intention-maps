@@ -246,6 +246,8 @@ def main(cfg):
         tau = 0.05 #default values from QL diffusion
         agent = Diffusion_QL(state_dim=state_dim,
                  action_dim=action_dim,
+                 lr = 3e-4/2,
+                 n_timesteps = 500,
                  max_action=1000.0,
                  device=device,
                  discount=discount,
