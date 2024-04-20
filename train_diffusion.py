@@ -23,10 +23,9 @@ from envs import VectorEnv
 # from diffusers.models import UNet2DConditionModel
 from diffusers.schedulers import DDPMScheduler
 from diffusers.training_utils import EMAModel
-from agents.model import LightConditionalNetwork
-from agents.diffusion2 import QMapDiffusion, TDErrorQMapDiffTrainer
-from networks import FCN, LightWeightBottleneck
+from agents.diffusion2 import DiffusionPolicy, TDErrorQMapDiffTrainer
 from intention_encoder_trainers import IntEncoderTrainer
+import networks
 # from resnet import resnet18
 from typing import Iterable, Tuple
 
@@ -124,8 +123,8 @@ def build_diff_trainer(cfg, robot_type,
     state_channel = cfg.num_input_channels
     action_channel = VectorEnv.get_num_output_channels(robot_type)
     # net
-    conditional_encoder = LightWeightBottleneck(state_channel).to(device)
-    noise_model = LightConditionalNetwork(
+    conditional_encoder = networks.LightWeightBottleneck(state_channel).to(device)
+    noise_model = networks.LightConditionalNetwork(
         VectorEnv.get_num_output_channels(robot_type),
         256).to(device)
     noise_scheduler = DDPMScheduler(
@@ -135,10 +134,10 @@ def build_diff_trainer(cfg, robot_type,
     ema = EMAModel(
         parameters=noise_model.parameters(),
         power=0.75)
-    policy = QMapDiffusion(
-        state_channel, action_channel,
-        height, width,
-        num_diffusion_iter,
+    policy = DiffusionPolicy(
+        inp_dims=(state_channel, height, width),
+        output_dims=(action_channel, height, width),
+        num_diffusion_iter=num_diffusion_iter,
         noise_model=noise_model,
         conditional_encoder=conditional_encoder,
         noise_scheduler=noise_scheduler,
@@ -210,7 +209,7 @@ def query_actions(states: Iterable[Iterable],
 
 def build_int_trainer(cfg):
     # net
-    intention_net = FCN((cfg.num_input_channels - 1), 1)
+    intention_net = networks.FCN((cfg.num_input_channels - 1), 1)
     # trainer
     trainer = IntEncoderTrainer(
         intention_net,
@@ -353,7 +352,8 @@ def main(cfg, log_scalars=True, log_visuals=True):
         ### Training
 
         # train net work only after a given time and train
-        if timestep >= learning_starts and (timestep + 1) % cfg.train_freq == 0:
+        if timestep >= 100:
+        # if timestep >= learning_starts and (timestep + 1) % cfg.train_freq == 0:
             all_train_info = {}
 
             for i in range(num_robot_groups):

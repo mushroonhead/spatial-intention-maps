@@ -9,10 +9,9 @@ from diffusers.schedulers import SchedulerMixin
 from diffusers.optimization import get_scheduler
 from typing import Optional
 
-class QMapDiffusion(torch.nn.Module):
+class DiffusionPolicy(torch.nn.Module):
     def __init__(self,
-                 inp_channel: int, out_channel: int,
-                 height: int, width: int,
+                 inp_dims: torch.Size, output_dims: torch.Size,
                  num_diffusion_iter: int,
                  noise_model: torch.nn.Module,
                  conditional_encoder: torch.nn.Module,
@@ -21,10 +20,8 @@ class QMapDiffusion(torch.nn.Module):
                  tensor_kwargs: dict,
                  *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.inp_channel = inp_channel
-        self.out_channel = out_channel
-        self.height = height
-        self.width = width
+        self.inp_dims = inp_dims
+        self.output_dims = output_dims
         self.num_diffusion_iter = num_diffusion_iter
         self.noise_model = noise_model
         self.conditional_encoder = conditional_encoder
@@ -36,16 +33,16 @@ class QMapDiffusion(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         - Inputs:
-            - x: (...,c_in,h,w) tensor
+            - x: (...,inp_dim..)  tensor
         - Returns:
-            - out: (...,c_out,h,w) tensor
+            - out: (...,out_dim...) tensor
         """
         # get sizes
-        batch_size = x.shape[:-3]
+        batch_size = x.shape[:-len(self.inp_dims)]
 
         # initialize image from Gaussian noise
         q_map = torch.randn(
-            (*batch_size, self.out_channel, self.height, self.width),
+            (*batch_size, *self.output_dims),
             device=x.device, dtype=x.dtype)
 
         # conditional encoding
@@ -82,10 +79,10 @@ class QMapDiffusion(torch.nn.Module):
 
 class QMapDiffTrainerBase:
     """
-    Base Qmap trainer for QMapDiffusion
+    Base Qmap trainer for Diffusion Policy
     """
     def __init__(self,
-                 diff_model: QMapDiffusion,
+                 diff_model: DiffusionPolicy,
                  discount_factor: float,
                  num_training_steps: int,
                  diff_loss: torch.nn.Module = torch.nn.MSELoss(),
@@ -109,37 +106,35 @@ class QMapDiffTrainerBase:
         # losses
         self.diff_loss = diff_loss
 
-    def get_diffusion_loss(self, state_map: torch.Tensor, action_map: torch.Tensor) -> torch.Tensor:
+    def get_diffusion_loss(self, output_target: torch.Tensor, inp_cond: torch.Tensor) -> torch.Tensor:
         """
         - Inputs:
-            - state_map: (...,C_s,H,W) tensor
-            - action_map: (...,C_a,H,W) tensor
+            - output_target: (...,output_dims...) tensor
+            - inp_cond: (...,inp_dims...) tensor
         - Returns:
             - loss: (...,) tensor
         """
 
         # get batch_shape and resize
-        state_map = state_map.view(-1, *state_map.shape[-3:])
-        action_map = action_map.view(-1, *action_map.shape[-3:])
+        output_target = output_target.view(-1, *self.policy.output_dims)
+        inp_cond = inp_cond.view(-1, *self.policy.inp_dims)
 
         # sample noise
-        noise = torch.randn(action_map.shape,
-                            device=state_map.device,
-                            dtype=state_map.dtype)
+        noise = torch.randn(output_target.shape, device=output_target.device, dtype=output_target.dtype)
 
         # random timesteps
         timesteps = torch.randint(
             0, self.policy.noise_scheduler.num_train_timesteps,
-            (state_map.shape[0],), device=state_map.device, dtype=torch.int32)
+            (output_target.shape[0],), device=output_target.device, dtype=torch.int32)
 
-        # add noise dep on timestep
-        noisy_action_map = self.policy.noise_scheduler.add_noise(
-            action_map, noise, timesteps)
+        # add noise dep on timestep to output_target
+        noisy_output = self.policy.noise_scheduler.add_noise(
+            output_target, noise, timesteps)
 
         # predict the noise residual
         noise_pred = self.policy.noise_model(
-            sample=noisy_action_map, timestep=timesteps,
-            encoder_hidden_states=self.policy.conditional_encoder(state_map))
+            sample=noisy_output, timestep=timesteps,
+            encoder_hidden_states=self.policy.conditional_encoder(inp_cond))
 
         # return loss
         return self.diff_loss(noise_pred, noise)
@@ -155,16 +150,14 @@ class TDErrorQMapDiffTrainer(QMapDiffTrainerBase):
     Treats output of policy as a qvalue map
     """
     def __init__(self,
-                 diff_model: QMapDiffusion,
+                 diff_model: DiffusionPolicy,
                  discount_factor: float,
                  num_training_steps: int,
                  target_transfer_period: int,
                  qmap_loss: torch.nn.Module= torch.nn.SmoothL1Loss(),
                  diff_loss: torch.nn.Module = torch.nn.MSELoss()) -> None:
         super().__init__(diff_model, discount_factor, num_training_steps, diff_loss)
-        self.height = diff_model.height
-        self.width = diff_model.width
-        self.action_channels = diff_model.out_channel
+        self.action_channels, self.height, self.width = diff_model.output_dims
         self.target_policy = deepcopy(diff_model)
         self.target_policy.eval()
         self.target_transfer_period = target_transfer_period
@@ -200,7 +193,7 @@ class TDErrorQMapDiffTrainer(QMapDiffTrainerBase):
         td_loss: torch.Tensor = self.qmap_loss(pred_q_map, target_q_map)
 
         # diffusion loss # doesnt make sense
-        diff_loss = self.get_diffusion_loss(state_map, pred_q_map.detach())
+        diff_loss = self.get_diffusion_loss(pred_q_map.detach(), state_map)
 
         # backpropagation
         loss = td_loss + diff_loss
@@ -244,7 +237,7 @@ class DQCriticQMapDiffTrainer(QMapDiffTrainerBase):
     Treats output of policy as a qvalue map
     """
     def __init__(self,
-                 diff_model: QMapDiffusion,
+                 diff_model: DiffusionPolicy,
                  critic_model_1: torch.nn.Module,
                  critic_model_2: torch.nn.Module,
                  discount_factor: float,
