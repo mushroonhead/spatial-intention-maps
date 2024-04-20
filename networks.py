@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import resnet
@@ -24,3 +25,34 @@ class FCN(nn.Module):
         x = F.relu(x)
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
         return self.conv3(x)
+
+
+class LightWeightBottleneck(torch.nn.Module):
+    """
+    Shrinks CxHxW to 1xF where F << C*H*W
+    - Consist of layer wise and channel wise indep convolutions
+    """
+    def __init__(self, inp_channel: int,
+                 *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.net = torch.nn.Sequential(
+            torch.nn.Conv2d(inp_channel, inp_channel, kernel_size=2, stride=2, groups=inp_channel),
+            torch.nn.BatchNorm2d(inp_channel),
+            torch.nn.Mish(),
+            torch.nn.Conv2d(inp_channel, inp_channel>>1, kernel_size=1, stride=1),
+            torch.nn.BatchNorm2d(inp_channel>>1),
+            torch.nn.Mish(),
+            torch.nn.Conv2d(inp_channel>>1, inp_channel>>1, kernel_size=3, stride=3, groups=inp_channel>>1),
+            torch.nn.BatchNorm2d(inp_channel>>1),
+            torch.nn.Mish(),
+            torch.nn.Conv2d(inp_channel>>1, inp_channel>>2, kernel_size=1, stride=1),
+            torch.nn.Flatten(-2))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+if __name__ == '__main__':
+    C = 5
+    x = torch.randn(32,C,96,96)
+    model = LightWeightBottleneck(C)
+    print(model(x).shape)

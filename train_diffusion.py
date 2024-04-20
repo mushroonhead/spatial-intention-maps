@@ -20,14 +20,15 @@ from tqdm import tqdm
 import utils
 
 from envs import VectorEnv
-from diffusers.models import UNet2DConditionModel
+# from diffusers.models import UNet2DConditionModel
 from diffusers.schedulers import DDPMScheduler
 from diffusers.training_utils import EMAModel
+from agents.model import LightConditionalNetwork
 from agents.diffusion2 import QMapDiffusion, TDErrorQMapDiffTrainer
-from networks import FCN
+from networks import FCN, LightWeightBottleneck
 from intention_encoder_trainers import IntEncoderTrainer
-from resnet import resnet18
-from typing import Iterable, Tuple, Optional
+# from resnet import resnet18
+from typing import Iterable, Tuple
 
 torch.backends.cudnn.benchmark = True
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -121,27 +122,16 @@ def build_diff_trainer(cfg, robot_type,
     tensor_kwargs = {'device':device,'dtype':torch.float32}
     # dim
     state_channel = cfg.num_input_channels
-    action_channel = VectorEnv.get_action_space(robot_type)
+    action_channel = VectorEnv.get_num_output_channels(robot_type)
     # net
-    class ResNetWrapper(torch.nn.Module):
-        def __init__(self, inp_channel: int, feature_channel: int,
-                     *args, **kwargs) -> None:
-            super().__init__(*args, **kwargs)
-            self.net = resnet18(num_input_channels=inp_channel,
-                                num_classes=feature_channel)
-
-        def forward(self, x):
-            return self.net(x)[...,None,:]
-
-    conditional_encoder = ResNetWrapper(state_channel, 512)
-    noise_model = UNet2DConditionModel(
-        sample_size=(height,width),
-        in_channels=action_channel, out_channels=action_channel)
+    conditional_encoder = LightWeightBottleneck(state_channel).to(device)
+    noise_model = LightConditionalNetwork(
+        VectorEnv.get_num_output_channels(robot_type),
+        256).to(device)
     noise_scheduler = DDPMScheduler(
         num_train_timesteps=num_diffusion_iter,
         beta_schedule='squaredcos_cap_v2',
-        prediction_type='epsilon'
-    )
+        prediction_type='epsilon')
     ema = EMAModel(
         parameters=noise_model.parameters(),
         power=0.75)
@@ -153,12 +143,14 @@ def build_diff_trainer(cfg, robot_type,
         conditional_encoder=conditional_encoder,
         noise_scheduler=noise_scheduler,
         ema=ema,
-        tensor_kwargs=tensor_kwargs)
+        tensor_kwargs=tensor_kwargs).to(device)
     # trainer
+    training_start = np.round(cfg.learning_starts_frac * cfg.total_timesteps).astype(np.uint32)
+    num_training_steps = np.ceil((cfg.total_timesteps - training_start)/ cfg.train_freq).astype(np.uint32)
     trainer = TDErrorQMapDiffTrainer(
         diff_model=policy,
         discount_factor=0.9,
-        num_training_steps=cfg.total_timesteps,
+        num_training_steps=num_training_steps,
         target_transfer_period=cfg.target_update_freq)
 
     return policy, trainer
@@ -193,17 +185,17 @@ def query_actions(states: Iterable[Iterable],
             group_i_actions = []
             group_i_outputs = []
             for state in group_i_states:
-                if state is None:
-                    action = None
-                    output = None
-                else:
+                action = None
+                output = None
+                if state is not None:
                     random_explore = random.random() < exploration_eps
                     if debug or not random_explore:
-                        output = policy(torch.tensor(state, device=device))
+                        output = policy(torch.tensor(state, device=device).permute(2,0,1).unsqueeze(0)).squeeze(0)
                     action = random.randrange(VectorEnv.get_action_space(robot_type)) \
                         if random_explore \
-                        else output.view(-1,1).max(1)[1].item()
-                    output = output.cpu().numpy()
+                        else output.view(-1).argmax().item()
+                    if debug or not random_explore:
+                        output = output.cpu().numpy()
 
                 group_i_actions.append(action)
                 group_i_outputs.append(output)
@@ -291,8 +283,8 @@ def main(cfg, log_scalars=True, log_visuals=True):
     robot_group_types = env.get_robot_group_types()
     num_robot_groups = len(robot_group_types)
 
-    # build diff trainers for each robot group
-    policies, diff_trainers = zip(*[build_diff_trainer(cfg, robot_type) for robot_type in robot_group_types])
+    # build policy trainers for each robot group
+    policies, policy_trainers = zip(*[build_diff_trainer(cfg, robot_type) for robot_type in robot_group_types])
 
     # build intention encoder for each robot group (if using predicted)
     if cfg.use_predicted_intention:
@@ -309,8 +301,8 @@ def main(cfg, log_scalars=True, log_visuals=True):
     training_iter = 0
 
     # Logging
+    meters = Meters()
     if log_scalars:
-        meters = Meters()
         train_summary_writer = SummaryWriter(log_dir=str(log_dir / 'train'))
     if log_visuals:
         visualization_summary_writer = SummaryWriter(log_dir=str(log_dir / 'visualization'))
@@ -322,8 +314,8 @@ def main(cfg, log_scalars=True, log_visuals=True):
     total_timesteps_with_warm_up = learning_starts + cfg.total_timesteps
 
     # RL loop, consists of exploration and training
-    for timestep in tqdm(range(start_timestep, total_timesteps_with_warm_up),
-                         initial=start_timestep, total=total_timesteps_with_warm_up, file=sys.stdout):
+    for timestep in (pbar:= tqdm(range(start_timestep, total_timesteps_with_warm_up),
+                         initial=start_timestep, total=total_timesteps_with_warm_up, file=sys.stdout)):
 
         ################################################################################
         ### Simulation
@@ -369,15 +361,17 @@ def main(cfg, log_scalars=True, log_visuals=True):
                 # format data from replay buffers
                 batch = replay_buffers[i].sample(cfg.batch_size)
 
-                batch_state_map = torch.cat([torch.tensor(s, device=device) for s in batch.state])  # (B, C, 96, 96)
+                batch_state_map = torch.stack(
+                    [torch.tensor(s, device=device).permute(2,0,1) for s in batch.state])           # (B, C, 96, 96)
                 batched_actions = torch.tensor(batch.action, dtype=torch.long, device=device)       # (B,)
                 batched_rewards = torch.tensor(batch.reward, dtype=torch.float32, device=device)    # (B,)
-                non_final_next_states = torch.cat(
-                    [torch.tensor(s, device=device) for s in batch.next_state if s is not None])    # (<=B, C, 96, 96)
+                non_final_next_states = torch.stack(
+                    [torch.tensor(s, device=device).permute(2,0,1) for s in batch.next_state \
+                     if s is not None])                                                             # (<=B, C, 96, 96)
                 non_final_state_mask = torch.tensor([s is not None for s in batch.next_state])      # (B,)
 
                 # train policies
-                train_info = diff_trainers[i].train(training_iter,
+                train_info = policy_trainers[i].train(training_iter,
                                                     batch_state_map, batched_actions,
                                                     batched_rewards, non_final_next_states,
                                                     non_final_state_mask)
@@ -400,9 +394,11 @@ def main(cfg, log_scalars=True, log_visuals=True):
         # Logging
 
         # Meters
-        if log_scalars and (timestep >= learning_starts and (timestep + 1) % cfg.train_freq == 0):
+        if (timestep >= learning_starts and (timestep + 1) % cfg.train_freq == 0):
             for name, val in all_train_info.items():
                 meters.update(name, val)
+
+            pbar.set_description(f"Avg Total Loss: {meters.avg('loss/robot_group_01'):05f},TD_Loss: {meters.avg('td_loss/robot_group_01'):05f},Diff_Loss: {meters.avg('diff_loss/robot_group_01'):05f}")
 
         if done:
 
@@ -442,46 +438,31 @@ def main(cfg, log_scalars=True, log_visuals=True):
         ################################################################################
         # Checkpointing
 
-        # test if can run first
+        if (timestep + 1) % cfg.checkpoint_freq == 0 or timestep + 1 == total_timesteps_with_warm_up:
+            if not checkpoint_dir.exists():
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        # if (timestep + 1) % cfg.checkpoint_freq == 0 or timestep + 1 == total_timesteps_with_warm_up:
-        #     if not checkpoint_dir.exists():
-        #         checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            # save state dicts
+            all_state_dicts_filename = 'all_state_dicts_{:08d}.pth.tar'.format(timestep + 1)
+            checkpoint_path = checkpoint_dir / all_state_dicts_filename
+            checkpoint = {
+                'timestep': timestep + 1,
+                'episode': episode,
+                'policy_trainers': [policy_trainer.get_state_dicts() for policy_trainer in  policy_trainers],
+                'replay_buffers': [replay_buffers[i] for i in range(num_robot_groups)],
+            }
+            if cfg.use_predicted_intention:
+                checkpoint['int_net_trainers'] = [int_net_trainer.get_state_dicts() for int_net_trainer in int_enc_trainers]
+            torch.save(checkpoint, str(checkpoint_path))
 
-        #     # Save policy
-        #     policy_filename = 'policy_{:08d}.pth.tar'.format(timestep + 1)
-        #     policy_path = checkpoint_dir / policy_filename
-        #     policy_checkpoint = {
-        #         'timestep': timestep + 1,
-        #         'state_dicts': [policy.policy_nets[i].state_dict() for i in range(num_robot_groups)],
-        #     }
-        #     if cfg.use_predicted_intention:
-        #         policy_checkpoint['state_dicts_intention'] = [policy.intention_nets[i].state_dict() for i in range(num_robot_groups)]
-        #     torch.save(policy_checkpoint, str(policy_path))
+            # Save updated config file
+            cfg.checkpoint_path = str(checkpoint_path)
+            utils.save_config(log_dir / 'config.yml', cfg)
 
-        #     # Save checkpoint
-        #     checkpoint_filename = 'checkpoint_{:08d}.pth.tar'.format(timestep + 1)
-        #     checkpoint_path = checkpoint_dir / checkpoint_filename
-        #     checkpoint = {
-        #         'timestep': timestep + 1,
-        #         'episode': episode,
-        #         'optimizers': [optimizers[i].state_dict() for i in range(num_robot_groups)],
-        #         'replay_buffers': [replay_buffers[i] for i in range(num_robot_groups)],
-        #     }
-        #     if cfg.use_predicted_intention:
-        #         checkpoint['optimizers_intention'] = [optimizers_intention[i].state_dict() for i in range(num_robot_groups)]
-        #     torch.save(checkpoint, str(checkpoint_path))
-
-        #     # Save updated config file
-        #     cfg.policy_path = str(policy_path)
-        #     cfg.checkpoint_path = str(checkpoint_path)
-        #     utils.save_config(log_dir / 'config.yml', cfg)
-
-        #     # Remove old checkpoint
-        #     checkpoint_paths = list(checkpoint_dir.glob('checkpoint_*.pth.tar'))
-        #     checkpoint_paths.remove(checkpoint_path)
-        #     for old_checkpoint_path in checkpoint_paths:
-        #         old_checkpoint_path.unlink()
+            # Remove old checkpoint
+            checkpoint_paths = list(checkpoint_dir.glob('all_state_dicts_*.pth.tar'))
+            [old_checkpoint_path.unlink() for old_checkpoint_path in checkpoint_paths if
+                not (old_checkpoint_path == checkpoint_path)]
 
     env.close()
 

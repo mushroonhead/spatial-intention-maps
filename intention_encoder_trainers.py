@@ -3,8 +3,6 @@ Trainer for intention encoders
 """
 
 import torch
-from typing import Optional
-
 
 class IntEncoderTrainer:
     def __init__(self,
@@ -37,3 +35,7 @@ class IntEncoderTrainer:
         self.optimizer.zero_grad()
 
         return {'int_loss':loss.item()}
+
+    def get_state_dicts(self) -> dict:
+        return {'intention_net':self.intention_net.state_dict(),
+                'int_net_optim':self.optimizer.state_dict()}
