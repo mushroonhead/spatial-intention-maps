@@ -26,8 +26,8 @@ from diffusers.training_utils import EMAModel
 from agents.diffusion2 import DiffusionPolicy, TDErrorQMapDiffTrainer
 from intention_encoder_trainers import IntEncoderTrainer
 import networks
-# from resnet import resnet18
-from typing import Iterable, Tuple
+from bootstrapped_policies import RandomPolicy, GreedyQMax
+from typing import Iterable, Tuple, Optional
 
 torch.backends.cudnn.benchmark = True
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -116,8 +116,52 @@ class Meters:
 
 #### policy utils ###
 
-def build_diff_trainer(cfg, robot_type,
-                       height=96, width=96, num_diffusion_iter=100):
+def load_bootstrapped_policy(state_channels: int, action_channels:int,
+                             height: int, width: int,
+                             mode: Optional[str]='FCN',
+                             filepath: str='checkpoints/20201214T092814688334-pushing_4-small_divider-ours/policy_00246000.pth.tar',
+                             chk_pt_robot_ind : int=0):
+    """
+    Loads the bootstrapped policy
+    - Inputs:
+        - state_channels: int, for config policy
+        - action_channels: int, for config policy
+        - height: int, for config policy
+        - width: int, for config policy
+        - mode: Optional[str], policy to boostrap,
+            - Random: if None
+            - FCN: orginal spatial intention maps
+        - filepath: str, used to load policy
+    - Returns:
+        - bootstrap_policy
+    """
+    if mode is None:
+        return RandomPolicy(action_channels, height, width)
+    elif mode == 'FCN':
+        fcn = torch.nn.DataParallel(networks.FCN(state_channels, action_channels)).to(device)
+        chck_pt = torch.load(filepath, map_location=device)
+        fcn.load_state_dict(chck_pt['state_dicts'][chk_pt_robot_ind])
+        policy = GreedyQMax((action_channels, height, width), fcn)
+        return policy
+    else:
+        raise ValueError('unknown bootstrap policy')
+
+def build_diff_trainer(cfg, robot_type, num_diffusion_iter=100,
+                       bootstrap_policy=None):
+    """
+    Builds the diffusion model and its trainer
+    - Inputs:
+        - cfg: configuration file
+        - robot_type
+        - height: int, height of map
+        - width: int, width of map
+        - num_diffusion_iter: int, number of diffusion timesteps
+        - bootstrap_policy: torch.nn.Module | None, policy to bootstrap
+    - Returns:
+        - policy: diffusion model
+        - trainer: trainer object of the policy
+    """
+    height, width = VectorEnv.get_state_width(), VectorEnv.get_state_width()
     tensor_kwargs = {'device':device,'dtype':torch.float32}
     # dim
     state_channel = cfg.num_input_channels
@@ -150,12 +194,36 @@ def build_diff_trainer(cfg, robot_type,
         diff_model=policy,
         discount_factor=0.9,
         num_training_steps=num_training_steps,
-        target_transfer_period=cfg.target_update_freq)
+        target_transfer_period=cfg.target_update_freq,
+        boot_strapped_policy=bootstrap_policy)
 
     return policy, trainer
 
+def load_dif_trainer_bootstraps(cfg, robot_group_types, num_diffusion_iter=100,
+                                bootstrap_mode=None):
+    # build bootstrapped policies
+    bootstrapped_policies =[load_bootstrapped_policy(cfg.num_input_channels,
+                                                     VectorEnv.get_num_output_channels(robot_type),
+                                                     VectorEnv.get_state_width(), VectorEnv.get_state_width(),
+                                                     mode=bootstrap_mode,
+                                                     chk_pt_robot_ind=i)
+                            for i, robot_type in enumerate(robot_group_types)]
+
+    if bootstrap_mode is None:
+        teacher_policies = [None for _ in robot_group_types]
+    elif bootstrap_mode == 'FCN':
+        teacher_policies = [bootstrapped_policy.q_mapper for bootstrapped_policy in bootstrapped_policies]
+
+    # build policy trainers for each robot group
+    policies, policy_trainers = zip(*[build_diff_trainer(cfg, robot_type,num_diffusion_iter, teacher_policy)
+                                       for robot_type, teacher_policy in zip(robot_group_types, teacher_policies)])
+
+    return bootstrapped_policies, policies, policy_trainers
+
+
 def query_actions(states: Iterable[Iterable],
-                  policies: Iterable[torch.nn.Module], robot_types: Iterable[str],
+                  policies: Iterable[torch.nn.Module],
+                  bootstrapped_policies: Iterable[torch.nn.Module],
                   exploration_eps: float,
                   debug: bool=False) -> Iterable:
     """
@@ -180,20 +248,20 @@ def query_actions(states: Iterable[Iterable],
     #TODO: change this into a batch evaluation
 
     with torch.no_grad():
-        for group_i_states, policy, robot_type in zip(states, policies, robot_types):
+        for group_i_states, policy, bs_policy in zip(states, policies, bootstrapped_policies):
             group_i_actions = []
             group_i_outputs = []
             for state in group_i_states:
                 action = None
                 output = None
                 if state is not None:
-                    random_explore = random.random() < exploration_eps
-                    if debug or not random_explore:
-                        output = policy(torch.tensor(state, device=device).permute(2,0,1).unsqueeze(0)).squeeze(0)
-                    action = random.randrange(VectorEnv.get_action_space(robot_type)) \
-                        if random_explore \
+                    run_bootstrap = random.random() < exploration_eps
+                    state = torch.tensor(state, device=device).permute(2,0,1).unsqueeze(0)
+                    if debug or not run_bootstrap:
+                        output = policy(state).squeeze(0)
+                    action = bs_policy(state).item() if run_bootstrap \
                         else output.view(-1).argmax().item()
-                    if debug or not random_explore:
+                    if debug or not run_bootstrap:
                         output = output.cpu().numpy()
 
                 group_i_actions.append(action)
@@ -282,8 +350,10 @@ def main(cfg, log_scalars=True, log_visuals=True):
     robot_group_types = env.get_robot_group_types()
     num_robot_groups = len(robot_group_types)
 
-    # build policy trainers for each robot group
-    policies, policy_trainers = zip(*[build_diff_trainer(cfg, robot_type) for robot_type in robot_group_types])
+    # build bootstrapped policies, diff policies and policy trainers
+    bootstrap_mode = 'FCN'
+    bootstrapped_policies, policies, policy_trainers = load_dif_trainer_bootstraps(cfg, robot_group_types,
+                                                                                   bootstrap_mode=bootstrap_mode)
 
     # build intention encoder for each robot group (if using predicted)
     if cfg.use_predicted_intention:
@@ -330,7 +400,7 @@ def main(cfg, log_scalars=True, log_visuals=True):
                 states, _ = encode_intentions(states, int_encoders)
 
         # query actions to use
-        actions, _ = query_actions(states, policies, robot_group_types, exploration_eps)
+        actions, _ = query_actions(states, policies, bootstrapped_policies, exploration_eps)
         transition_tracker.update_action(actions)
 
         # Step the simulation
@@ -423,7 +493,7 @@ def main(cfg, log_scalars=True, log_visuals=True):
                 # run an encoding step
                 if cfg.use_predicted_intention:
                     random_states, enc_info = encode_intentions(random_states, int_encoders, debug=True)
-                _, act_info = query_actions(random_states, policies, robot_group_types, exploration_eps=0.0, debug=True)
+                _, act_info = query_actions(random_states, policies, bootstrapped_policies, exploration_eps=0.0, debug=True)
                 for i in range(num_robot_groups):
                     visualization = utils.get_state_output_visualization(
                         random_states[i][0], act_info['output'][i][0]).transpose((2, 0, 1))

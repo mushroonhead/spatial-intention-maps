@@ -147,21 +147,27 @@ class QMapDiffTrainerBase:
 
 class TDErrorQMapDiffTrainer(QMapDiffTrainerBase):
     """
-    Treats output of policy as a qvalue map
+    Treats output of policy as a qvalue map,
+    allows an optional bootstrapped policy to guide the initial training
     """
     def __init__(self,
                  diff_model: DiffusionPolicy,
                  discount_factor: float,
                  num_training_steps: int,
                  target_transfer_period: int,
+                 init_tau: float=0.99, tau_decay: float=0.99,
+                 boot_strapped_policy: Optional[torch.nn.Module] = None,
                  qmap_loss: torch.nn.Module= torch.nn.SmoothL1Loss(),
                  diff_loss: torch.nn.Module = torch.nn.MSELoss()) -> None:
         super().__init__(diff_model, discount_factor, num_training_steps, diff_loss)
         self.action_channels, self.height, self.width = diff_model.output_dims
         self.target_policy = deepcopy(diff_model)
         self.target_policy.eval()
+        self.current_tau = torch.nn.Parameter(torch.tensor(init_tau), requires_grad=False) # track current tau
+        self.tau_decay = tau_decay
         self.target_transfer_period = target_transfer_period
         self.qmap_loss = qmap_loss
+        self.boot_strapped_policy = boot_strapped_policy
 
     def train(self, training_iter: int,
               state_map: torch.Tensor, actions: torch.Tensor,
@@ -192,11 +198,18 @@ class TDErrorQMapDiffTrainer(QMapDiffTrainerBase):
 
         td_loss: torch.Tensor = self.qmap_loss(pred_q_map, target_q_map)
 
-        # diffusion loss # doesnt make sense
-        diff_loss = self.get_diffusion_loss(pred_q_map.detach(), state_map)
+        # diffusion loss
+        if self.boot_strapped_policy is None:
+            # doesnt make sense
+            diff_loss = self.get_diffusion_loss(pred_q_map.detach(), state_map)
+        else:
+            # replicate our bootstrap
+            with torch.no_grad():
+                model_q_map = self.boot_strapped_policy(state_map)
+            diff_loss = self.get_diffusion_loss(model_q_map.detach(), state_map)
 
         # backpropagation
-        loss = td_loss + diff_loss
+        loss = self.current_tau*td_loss + (1-self.current_tau)*diff_loss
         loss.backward()
         self.optimizer.step()
         self.optimizer.zero_grad()
@@ -206,6 +219,9 @@ class TDErrorQMapDiffTrainer(QMapDiffTrainerBase):
         # transfer weights at interval
         if training_iter % self.target_transfer_period == 0:
             self.target_policy.load_state_dict(self.policy.state_dict())
+
+        # update tau
+        self.current_tau *= self.tau_decay
 
         # losses
         return {'td_loss':td_loss.item(),
