@@ -302,7 +302,7 @@ def step_diffusion_wrapper(state, policy_diffusion, policy, train, robot_group_t
 
     
 def main(cfg):
-    policy = utils.get_policy_from_cfg(cfg)
+    static_policy = utils.get_policy_from_cfg(cfg)
     # Set up logging and checkpointing
     log_dir = Path(cfg.log_dir)
     checkpoint_dir = Path(cfg.checkpoint_dir)
@@ -323,7 +323,7 @@ def main(cfg):
     num_robot_groups = len(robot_group_types)
 
     # Policy
-    static_policy = utils.get_policy_from_cfg(cfg, train=True)
+    policy = utils.get_policy_from_cfg(cfg, train=True)
     beta_schedule = 'linear'
     n_timesteps, ema_decay, step_start_ema = 100, 0.995, 1000
     policy_diffusion, emas, ema_models, action_dims, state_dims = [], [], [], [], []
