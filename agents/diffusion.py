@@ -112,7 +112,7 @@ class Diffusion(nn.Module):
         x_recon = self.predict_start_from_noise(x, t=t, noise=self.model(x, t, s))
 
         if self.clip_denoised:
-            x_recon.clamp_(0.0, self.max_action)
+            x_recon.clamp_(-self.max_action, self.max_action)
             #x_recon.clamp_(0, self.max_action)
         else:
             assert RuntimeError()
@@ -160,7 +160,7 @@ class Diffusion(nn.Module):
         batch_size = state.shape[0]
         shape = (batch_size, self.action_dim)
         action = self.p_sample_loop(state, shape, *args, **kwargs)
-        return action.clamp_(0.0, self.max_action)
+        return action.clamp_(-self.max_action, self.max_action)
         #return action.clamp_(0, self.max_action)
 
     # ------------------------------------------ training ------------------------------------------#
