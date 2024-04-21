@@ -323,7 +323,7 @@ def main(cfg):
     num_robot_groups = len(robot_group_types)
 
     # Policy
-    policy = utils.get_policy_from_cfg(cfg, train=True)
+    static_policy = utils.get_policy_from_cfg(cfg, train=True)
     beta_schedule = 'linear'
     n_timesteps, ema_decay, step_start_ema = 100, 0.995, 1000
     policy_diffusion, emas, ema_models, action_dims, state_dims = [], [], [], [], []
@@ -399,7 +399,7 @@ def main(cfg):
         #     #action = policy.step(state, exploration_eps=exploration_eps, use_ground_truth_intention=use_ground_truth_intention)
         # else:
         #     action = step_diffusion_wrapper(state, policy_diffusion, policy, train=True, robot_group_types=robot_group_types, exploration_eps=exploration_eps)
-        action = policy.step(state)
+        action = static_policy.step(state)
         transition_tracker.update_action(action)
 
         # Step the simulation
