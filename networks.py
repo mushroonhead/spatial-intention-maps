@@ -41,6 +41,25 @@ class FCN(nn.Module):
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
         return self.conv3(x)
 
+class LightEncoderFCN(torch.nn.Module):
+    def __init__(self, num_input_channels=3, num_output_channels=256):
+        super().__init__()
+        self.resnet = resnet.resnet_N(layers=[2,2,2],num_input_channels=num_input_channels,
+                                      features_only=True)
+        self.conv1 = nn.Conv2d(256, 256, kernel_size=1, stride=1)
+        self.bn1 = nn.BatchNorm2d(256)
+        self.conv2 = nn.Conv2d(256, num_output_channels, kernel_size=1, stride=1)
+
+    def forward(self, x):
+        x = self.resnet(x)
+        x = F.relu(x)
+        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=True)
+
+        return self.conv2(x)
 
 class LightWeightBottleneck(torch.nn.Module):
     """
@@ -66,7 +85,6 @@ class LightWeightBottleneck(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
-import torch
 
 class LightUnet(torch.nn.Module):
     """
@@ -107,6 +125,7 @@ class LightUnet(torch.nn.Module):
 class LightConditionalNetwork(torch.nn.Module):
     def __init__(self, inp_channel: int, cond_channel: int,
                  t_dim : int=16,
+                 repeat_enc = True,
                  *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.cond_channel = cond_channel
@@ -124,6 +143,8 @@ class LightConditionalNetwork(torch.nn.Module):
             torch.nn.BatchNorm2d(32),
             torch.nn.Mish(),
             torch.nn.Conv2d(32, inp_channel, kernel_size=1, stride=1))
+        self.expand_enc = self._expand_enc_repeat_pixels if repeat_enc \
+            else self._expand_enc_align_pixels
 
     def forward(self, sample: torch.Tensor,
                 timestep: Union[int, torch.IntTensor],
@@ -139,12 +160,32 @@ class LightConditionalNetwork(torch.nn.Module):
         time_encoding = self.time_encoder(timestep).view(-1,self.t_dim).expand(sample.shape[0], -1) # (B,t_dim)
         time_encoding = time_encoding[...,None,None].expand(-1,-1,*sample_features.shape[-2:]) # (B,t_dim,H,W)
 
-        encoder_hidden_states = encoder_hidden_states.view(encoder_hidden_states.shape[0], -1) # (B,cond_c)
-        encoder_hidden_states = encoder_hidden_states[...,None,None].expand(-1,-1,*sample_features.shape[-2:]) # (B,cond_c,H,W)
+        encoder_hidden_states = self.expand_enc(encoder_hidden_states, *sample_features.shape[-2:]) # (B,cond_c,H,W)
         output = self.shared_mlp(
             torch.cat((sample_features, encoder_hidden_states, time_encoding), dim=-3)) # (B,total,H,W)
 
         return output # (B,inp_c,H,W)
+
+    def _expand_enc_repeat_pixels(self, encoder_hidden_states: torch.Tensor, h: int, w: int) -> torch.Tensor:
+        """
+        - Inputs:
+            - encoder_hidden_states: (B,cond_c) tensor
+        - Returns:
+            - encoder_hidden_states: (B,cond_c,h,w) tensor
+        """
+        encoder_hidden_states = encoder_hidden_states.view(encoder_hidden_states.shape[0], -1) # (B,cond_c)
+        encoder_hidden_states = encoder_hidden_states[...,None,None].expand(-1,-1,h,w) # (B,cond_c,H,W)\
+        return encoder_hidden_states
+
+    def _expand_enc_align_pixels(self, encoder_hidden_states: torch.Tensor, h: int, w: int) -> torch.Tensor:
+        """
+        - Inputs:
+            - encoder_hidden_states: (B,cond_c,h,w) tensor
+        - Returns:
+            - encoder_hidden_states: (B,cond_c,h,w) tensor
+        """
+        return encoder_hidden_states
+
 
 if __name__ == '__main__':
     # # test LightUnet
@@ -165,5 +206,25 @@ if __name__ == '__main__':
     # y = LightConditionalNetwork(1, 256)(sample=x, timestep=t,
     #                                     encoder_hidden_states=cond)
     # print(y.shape)
+
+    # C = 5
+
+    # x = torch.randn(32, C, 96, 96)
+
+    # res = resnet.resnet18(num_input_channels=C)
+    # y = res(x)
+    # print(y.shape)
+
+    # resf = resnet.resnet18(layers=[2,2,2], features_only=True, num_input_channels=C)
+    # y2 = resf(x)
+    # print(y2.shape)
+
+    C = 5
+
+    x = torch.randn(32, C, 96, 96)
+
+    lfcn = LightEncoderFCN(C)
+    y = lfcn(x)
+    print(y.shape)
 
     pass

@@ -167,10 +167,13 @@ def build_diff_trainer(cfg, robot_type, num_diffusion_iter=100,
     state_channel = cfg.num_input_channels
     action_channel = VectorEnv.get_num_output_channels(robot_type)
     # net
-    conditional_encoder = networks.LightWeightBottleneck(state_channel).to(device)
+    # conditional_encoder = networks.LightWeightBottleneck(state_channel).to(device)
+    conditional_encoder = networks.LightEncoderFCN(state_channel).to(device)
     noise_model = networks.LightConditionalNetwork(
         VectorEnv.get_num_output_channels(robot_type),
-        256).to(device)
+        256,
+        repeat_enc=False
+        ).to(device)
     noise_scheduler = DDPMScheduler(
         num_train_timesteps=num_diffusion_iter,
         beta_schedule='squaredcos_cap_v2',

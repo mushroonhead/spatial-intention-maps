@@ -112,9 +112,65 @@ class ResNet(nn.Module):
         return x
 
 
-def resnet18(**kwargs):
+class ResNetFeature(nn.Module):
+    """
+    Striped version of ResNet, outputting pixelwise
+     features without aggregating MLP layers
+    - out_c = 64 * 2^num_layers
+    """
+    def __init__(self, block, layers, num_input_channels=3):
+        super().__init__()
+        self.inplanes = 64
+        self.conv1 = nn.Conv2d(num_input_channels, 64, kernel_size=7, stride=2, padding=3,
+                               bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        layers = [self._make_layer(block, 64<<i, layer) for i, layer in enumerate(layers)]
+        self.seq_layers = nn.Sequential(*layers)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def _make_layer(self, block, planes, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.inplanes != planes:
+            downsample = nn.Sequential(
+                conv1x1(self.inplanes, planes, stride),
+                nn.BatchNorm2d(planes),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample))
+        self.inplanes = planes
+        for _ in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.seq_layers(x)
+
+        return x
+
+def resnet_N(layers=[2, 2, 2, 2], features_only=False, **kwargs):
+    """Constructs an arbituray sized ResNet model.
+    """
+    return ResNetFeature(BasicBlock, layers, **kwargs) if features_only\
+         else ResNet(BasicBlock, layers, **kwargs)
+
+def resnet18(features_only=False, **kwargs):
     """Constructs a ResNet-18 model.
     Args:
         pretrained (bool): If True, returns a model pre-trained on ImageNet
     """
-    return ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
+    return resnet_N(layers=[2, 2, 2, 2], features_only=False, **kwargs)
