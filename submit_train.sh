@@ -17,10 +17,11 @@
 module purge
 module load python/3.10.4
 module load cuda/11.8.0
-source /home/joshmah/spatial_int_map_diffuser/envs/spatial_int_maps_3_10_4/bin/activate
+# source /home/joshmah/spatial_int_map_diffuser/envs/spatial_int_maps_3_10_4/bin/activate
+source /home/joshmah/sim_diffuser_3_10_4/envs/spatial_int_maps_3_10_4/bin/activate
 
 # run trainer
-python train.py --config-path /home/joshmah/spatial_int_map_diffuser/spatial-intention-maps/config/experiments/ours/pushing_4-small_divider-ours.yml
+python train_diffusion.py --config-path /home/joshmah/spatial_int_map_diffuser/spatial-intention-maps/config/experiments/ours/pushing_4-small_divider-ours.yml
 
 # close modules
 deactivate
