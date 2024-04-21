@@ -158,10 +158,12 @@ def build_intention_nets(num_robot_groups,num_input_channels):
 
 def train_diffusion(cfg, policy_diffusion, target_net, optimizer, batch, transform_fn, discount_factor):
     state_batch = torch.cat([transform_fn(s) for s in batch.state]).to(device)  # (32, 4, 96, 96)
+    # state_batch = torch.cat([transform_fn(2*s-1) for s in batch.state]).to(device)  # (32, 4, 96, 96)
     action_batch_single_num = torch.tensor(batch.action, dtype=torch.long).to(device)  # (32,)
     reward_batch = torch.tensor(batch.reward, dtype=torch.float32).to(device)  # (32,)
 
     action_batch_vector = torch.zeros((action_batch_single_num.shape[0], 96*96), dtype=torch.long).to(device)
+    #action_batch_vector = -torch.ones((action_batch_single_num.shape[0], 96*96), dtype=torch.long).to(device)
     for i in range(action_batch_vector.shape[0]):
         action_batch_vector[i,action_batch_single_num[i]] = 1
 
@@ -171,14 +173,16 @@ def train_diffusion(cfg, policy_diffusion, target_net, optimizer, batch, transfo
         print("ERROR: line 169, all batch.next_state are None")
         train_info = {}
         train_info['td_error'] = 0.0
-        train_info['diffusion_loss'] = 0.0
-        train_info['dqn_loss'] = 0.0
+        train_info['bc_loss'] = 0.0
+        train_info['target_loss'] = 0.0
         return train_info
     # jpk
 
     non_final_next_states = torch.cat([transform_fn(s) for s in batch.next_state if s is not None]).to(device, non_blocking=True)  # (<=32, 4, 96, 96)
+    #non_final_next_states = torch.cat([transform_fn(2*s-1) for s in batch.next_state if s is not None]).to(device, non_blocking=True)  # (<=32, 4, 96, 96)
 
     output = policy_diffusion(state_batch) #policy_net(state_batch)  # (32, 2, 96, 96)
+    #output = (output+1.0)/2.0
     state_action_values = output.view(cfg.batch_size, -1).gather(1, action_batch_single_num.unsqueeze(1)).squeeze(1)  # (32,)
     next_state_values = torch.zeros(cfg.batch_size, dtype=torch.float32, device=device)  # (32,)
     non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), dtype=torch.bool, device=device)  # (32,)
@@ -186,16 +190,18 @@ def train_diffusion(cfg, policy_diffusion, target_net, optimizer, batch, transfo
     if cfg.use_double_dqn:
         with torch.no_grad():
             best_action = policy_diffusion(non_final_next_states).view(non_final_next_states.size(0), -1).max(1)[1].view(non_final_next_states.size(0), 1)  # (<=32, 1)
+            # best_action = (best_action+1.0)/2.0
             next_state_values[non_final_mask] = target_net(non_final_next_states).view(non_final_next_states.size(0), -1).gather(1, best_action).view(-1)  # (<=32,)
     else:
         next_state_values[non_final_mask] = target_net(non_final_next_states).view(non_final_next_states.size(0), -1).max(1)[0].detach()  # (<=32,)
 
+    # next_state_values[non_final_mask] = (next_state_values[non_final_mask]+1.0)/2.0
     expected_state_action_values = (reward_batch + discount_factor * next_state_values)  # (32,)
     td_error = torch.abs(state_action_values - expected_state_action_values).detach()  # (32,)
 
-    diffusion_loss = policy_diffusion.loss(action_batch_vector.to(torch.float32),state_batch)
-    dqn_loss = smooth_l1_loss(state_action_values, expected_state_action_values)
-    loss = diffusion_loss + dqn_loss
+    bc_loss = policy_diffusion.loss(action_batch_vector.to(torch.float32),state_batch)
+    target_loss = smooth_l1_loss(state_action_values, expected_state_action_values)
+    loss = bc_loss + target_loss
 
     optimizer.zero_grad()
     loss.backward()
@@ -205,8 +211,8 @@ def train_diffusion(cfg, policy_diffusion, target_net, optimizer, batch, transfo
 
     train_info = {}
     train_info['td_error'] = td_error.mean().item()
-    train_info['diffusion_loss'] = diffusion_loss.item()
-    train_info['dqn_loss'] = dqn_loss.item()
+    train_info['bc_loss'] = bc_loss.item()
+    train_info['target_loss'] = target_loss.item()
 
     return train_info
 
