@@ -155,7 +155,7 @@ class TDErrorQMapDiffTrainer(QMapDiffTrainerBase):
                  discount_factor: float,
                  num_training_steps: int,
                  target_transfer_period: int,
-                 init_tau: float=0.99, tau_decay: float=0.99,
+                 init_tau: float=0.99, tau_decay: float=0.999,
                  boot_strapped_policy: Optional[torch.nn.Module] = None,
                  qmap_loss: torch.nn.Module= torch.nn.SmoothL1Loss(),
                  diff_loss: torch.nn.Module = torch.nn.MSELoss()) -> None:
@@ -209,7 +209,7 @@ class TDErrorQMapDiffTrainer(QMapDiffTrainerBase):
             diff_loss = self.get_diffusion_loss(model_q_map.detach(), state_map)
 
         # backpropagation
-        loss = self.current_tau*td_loss + (1-self.current_tau)*diff_loss
+        loss = (1-self.current_tau)*td_loss + self.current_tau*diff_loss
         loss.backward()
         self.optimizer.step()
         self.optimizer.zero_grad()
