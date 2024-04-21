@@ -425,8 +425,7 @@ def main(cfg, log_scalars=True, log_visuals=True):
         ### Training
 
         # train net work only after a given time and train
-        if timestep >= 100:
-        # if timestep >= learning_starts and (timestep + 1) % cfg.train_freq == 0:
+        if timestep >= learning_starts and (timestep + 1) % cfg.train_freq == 0:
             all_train_info = {}
 
             for i in range(num_robot_groups):
