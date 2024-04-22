@@ -260,7 +260,7 @@ def query_actions(states: Iterable[Iterable],
                   policies: Iterable[torch.nn.Module],
                   bootstrapped_policies: Iterable[torch.nn.Module],
                   exploration_eps: float,
-                  qmap_mode = False,
+                  qmap_mode = True,
                   debug: bool=False) -> Iterable:
     """
     - Inputs:

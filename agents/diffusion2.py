@@ -192,7 +192,8 @@ class TDErrorQMapDiffTrainer(DiffTrainerBase):
 
         # standard dqn td error training (here we assume r to be determined only on s,a)
         with torch.no_grad():
-            next_vals = self.target_policy(non_final_next_states).detach().view(B,-1).max(-1)[0] # (B,)
+            next_vals = self.target_policy(non_final_next_states).detach()
+            next_vals = next_vals.view(next_vals.shape[0],-1).max(-1)[0] # (B,)
             next_vals = rewards + (self.discount_factor * \
                 torch.eye(B, device=device)[non_final_state_mask].T @ next_vals)
 
