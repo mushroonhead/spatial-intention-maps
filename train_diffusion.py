@@ -168,8 +168,7 @@ def build_diff_trainer(cfg, robot_type, num_diffusion_iter=100,
     state_channel = cfg.num_input_channels
     action_channel = VectorEnv.get_num_output_channels(robot_type)
     # net
-    conditional_encoder = resnet.resnet_N(layers=[2,], features_only=True, num_input_channels=5)
-    noise_model = networks.CondMLP(64*24*24, 2, 16).to(device)
+    # qmap learning network 1
     # conditional_encoder = networks.LightWeightBottleneck(state_channel).to(device)
     # conditional_encoder = networks.LightEncoderFCN(state_channel).to(device)
     # noise_model = networks.LightConditionalNetwork(
@@ -177,6 +176,13 @@ def build_diff_trainer(cfg, robot_type, num_diffusion_iter=100,
     #     256,
     #     repeat_enc=False
     #     ).to(device)
+    # qmap learning network 2
+    conditional_encoder = resnet.resnet_N(layers=[2,2,2], features_only=True,
+                                          num_input_channels=state_channel).to(device)
+    noise_model = networks.LightCondUnet2D(256,action_channel,16)
+    # action space learning network 1
+    # conditional_encoder = resnet.resnet_N(layers=[2,], features_only=True, num_input_channels=5)
+    # noise_model = networks.CondMLP(64*24*24, 2, 16).to(device)
     noise_scheduler = DDPMScheduler(
         num_train_timesteps=num_diffusion_iter,
         beta_schedule='squaredcos_cap_v2',
@@ -184,6 +190,7 @@ def build_diff_trainer(cfg, robot_type, num_diffusion_iter=100,
     ema = EMAModel(
         parameters=noise_model.parameters(),
         power=0.75)
+    ema.to(device)
     policy = DiffusionPolicy(
         inp_dims=(state_channel, height, width),
         output_dims=(action_channel, height, width),
@@ -196,32 +203,34 @@ def build_diff_trainer(cfg, robot_type, num_diffusion_iter=100,
     # trainer
     training_start = np.round(cfg.learning_starts_frac * cfg.total_timesteps).astype(np.uint32)
     num_training_steps = np.ceil((cfg.total_timesteps - training_start)/ cfg.train_freq).astype(np.uint32)
-    # trainer = TDErrorQMapDiffTrainer(
-    #     diff_model=policy,
-    #     discount_factor=0.9,
-    #     num_training_steps=num_training_steps,
-    #     target_transfer_period=cfg.target_update_freq,
-    #     boot_strapped_policy=bootstrap_policy)
-    policy = StateBasedDiffuser(
-        inp_dims=(state_channel,height,width), output_dims=(2,),
-        num_diffusion_iter=num_diffusion_iter,
-        noise_model=noise_model,
-        conditional_encoder=conditional_encoder,
-        noise_scheduler=noise_scheduler,
-        ema=ema,
-        tensor_kwargs=tensor_kwargs).to(device)
-    twin_q = TwinQNetwork(
-        networks.FCN(state_channel, action_channel),
-        networks.FCN(state_channel, action_channel)).to(device)
-    trainer = ActionDiffuserTrainer(
+    trainer = TDErrorQMapDiffTrainer(
         diff_model=policy,
-        critic_model=twin_q,
-        num_training_steps=num_training_steps,
         discount_factor=0.9,
-        policy_eta=1.0,
-        update_ema_every=5,
-        critic_tau=0.005,
-        critic_xfer_period=2)
+        num_training_steps=num_training_steps,
+        target_transfer_period=cfg.target_update_freq,
+        boot_strapped_policy=bootstrap_policy,
+        init_tau=1.0, tau_decay=1.0)
+    # state based learning
+    # policy = StateBasedDiffuser(
+    #     inp_dims=(state_channel,height,width), output_dims=(2,),
+    #     num_diffusion_iter=num_diffusion_iter,
+    #     noise_model=noise_model,
+    #     conditional_encoder=conditional_encoder,
+    #     noise_scheduler=noise_scheduler,
+    #     ema=ema,
+    #     tensor_kwargs=tensor_kwargs).to(device)
+    # twin_q = TwinQNetwork(
+    #     networks.FCN(state_channel, action_channel),
+    #     networks.FCN(state_channel, action_channel)).to(device)
+    # trainer = ActionDiffuserTrainer(
+    #     diff_model=policy,
+    #     critic_model=twin_q,
+    #     num_training_steps=num_training_steps,
+    #     discount_factor=0.9,
+    #     policy_eta=1.0,
+    #     update_ema_every=5,
+    #     critic_tau=0.005,
+    #     critic_xfer_period=2)
 
     return policy, trainer
 
@@ -360,7 +369,7 @@ def encode_intentions(states: Iterable[Iterable],
 
 ########
 
-def main(cfg, log_scalars=True, log_visuals=False):
+def main(cfg, log_scalars=True, log_visuals=True):
     # Set up logging and checkpointing
     log_dir = Path(cfg.log_dir)
     checkpoint_dir = Path(cfg.checkpoint_dir)
@@ -529,9 +538,10 @@ def main(cfg, log_scalars=True, log_visuals=False):
                     random_states, enc_info = encode_intentions(random_states, int_encoders, debug=True)
                 _, act_info = query_actions(random_states, policies, bootstrapped_policies, exploration_eps=0.0, debug=True)
                 for i in range(num_robot_groups):
-                    visualization = utils.get_state_output_visualization(
-                        random_states[i][0], act_info['output'][i][0]).transpose((2, 0, 1))
-                    visualization_summary_writer.add_image('output/robot_group_{:02}'.format(i + 1), visualization, timestep + 1)
+                    if 'output' in act_info:
+                        visualization = utils.get_state_output_visualization(
+                            random_states[i][0], act_info['output'][i][0]).transpose((2, 0, 1))
+                        visualization_summary_writer.add_image('output/robot_group_{:02}'.format(i + 1), visualization, timestep + 1)
                     if cfg.use_predicted_intention:
                         visualization_intention = utils.get_state_output_visualization(
                             random_states[i][0],

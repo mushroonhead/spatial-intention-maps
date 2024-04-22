@@ -228,19 +228,48 @@ class CondMLP(torch.nn.Module):
 
         return x
 
+################### Image net 2
+
+class LightCondUnet2D(torch.nn.Module):
+    def __init__(self,
+                    encoder_channel: int,
+                    inp_channel: int,
+                    t_dim: int,
+                    *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.a_enc = resnet.resnet_N(layers=[2,2,2], features_only=True,
+                                        num_input_channels=inp_channel)
+        self.time_enc = nn.Sequential(
+            SinusoidalPosEmb(t_dim),
+            nn.Linear(t_dim, t_dim * 2),
+            nn.ReLU(),
+            nn.Linear(t_dim * 2, t_dim))
+        stacked_channels = 256 + encoder_channel + t_dim # 256 det by layers=[2,2,2]
+        self.dec = nn.Sequential(
+            torch.nn.Conv2d(stacked_channels, 256, kernel_size=1, stride=1),
+            torch.nn.BatchNorm2d(256),
+            torch.nn.Mish(),
+            Interpolate({'scale_factor':2, 'mode':'bilinear', 'align_corners':True}),
+            torch.nn.Conv2d(256, 64, kernel_size=1, stride=1),
+            torch.nn.BatchNorm2d(64),
+            torch.nn.Mish(),
+            Interpolate({'scale_factor':2, 'mode':'bilinear', 'align_corners':True}),
+            torch.nn.Conv2d(64, inp_channel, kernel_size=1, stride=1))
+
+    def forward(self, sample: torch.Tensor, timestep: torch.IntTensor,
+                encoder_hidden_states: torch.Tensor) -> torch.Tensor:
+        a_enc = self.a_enc(sample) # (B,a_enc,24,24)
+        if timestep.ndim < 1:
+            timestep = timestep.unsqueeze(-1) #(1,)
+        t_enc = self.time_enc(timestep.to(sample.device))[...,None,None].expand(
+            a_enc.shape[0],-1,*a_enc.shape[-2:]) # (B,t_dim,24,24)
+        x = torch.cat((a_enc, encoder_hidden_states, t_enc), dim=-3)
+        x = self.dec(x)
+
+        return x
 
 if __name__ == '__main__':
-    state = torch.randn(32, 5, 96,96)
-    action = torch.randn(32,2)
-    t = torch.randint(0,100, (32,))
 
-    resf = resnet.resnet_N(layers=[2,], features_only=True, num_input_channels=5)
-    enc = resf(state)
-    cond_mlp = CondMLP(64*24*24, 2, 16)
-    pred_noise = cond_mlp(sample=action, timestep=t,
-                          encoder_hidden_states=enc)
-
-    print(pred_noise.shape)
 
 
     # # light bottleneck
@@ -249,6 +278,8 @@ if __name__ == '__main__':
     # model = LightWeightBottleneck(C)(x)
 
     # x.shape
+
+    ############################
 
     # # test LightUnet
     # C = 5
@@ -269,6 +300,8 @@ if __name__ == '__main__':
     #                                     encoder_hidden_states=cond)
     # print(y.shape)
 
+
+    ##########################
     # C = 5
 
     # x = torch.randn(32, C, 96, 96)
@@ -288,5 +321,35 @@ if __name__ == '__main__':
     # lfcn = LightEncoderFCN(C)
     # y = lfcn(x)
     # print(y.shape)
+
+    ###################
+
+    # state = torch.randn(32, 5, 96,96)
+    # action = torch.randn(32,2)
+    # t = torch.randint(0,100, (32,))
+
+    # resf = resnet.resnet_N(layers=[2,], features_only=True, num_input_channels=5)
+    # enc = resf(state)
+    # cond_mlp = CondMLP(64*24*24, 2, 16)
+    # pred_noise = cond_mlp(sample=action, timestep=t,
+    #                       encoder_hidden_states=enc)
+
+    # print(pred_noise.shape)
+
+
+    ############# Image net 2
+
+    state = torch.randn(32, 5, 96,96)
+    action = torch.randn(32, 1, 96,96)
+    t = torch.randint(0,100, (32,))
+
+    resf = resnet.resnet_N(layers=[2,2,2], features_only=True, num_input_channels=5)
+    enc = resf(state)
+    cond_mlp = LightCondUnet2D(256,1,16)
+    pred_noise = cond_mlp(sample=action, timestep=t,
+                          encoder_hidden_states=enc)
+
+    print(pred_noise.shape)
+
 
     pass

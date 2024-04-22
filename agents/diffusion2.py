@@ -169,7 +169,7 @@ class TDErrorQMapDiffTrainer(DiffTrainerBase):
         self.current_tau = torch.nn.Parameter(torch.tensor(init_tau), requires_grad=False) # track current tau
         self.tau_decay = tau_decay
         self.target_transfer_period = target_transfer_period
-        self.qmap_loss = qmap_loss
+        self.td_loss = qmap_loss
         self.boot_strapped_policy = boot_strapped_policy
 
     def train(self, training_iter: int,
@@ -192,14 +192,14 @@ class TDErrorQMapDiffTrainer(DiffTrainerBase):
 
         # standard dqn td error training (here we assume r to be determined only on s,a)
         with torch.no_grad():
-            next_step_vals = self.target_policy(non_final_next_states).detach()
-            next_state_shape = next_step_vals.shape[1:]
-            target_q_map = rewards[:,None,None,None] + (self.discount_factor * \
-                torch.eye(B, device=device)[non_final_state_mask].T @ next_step_vals.view(-1,prod(next_state_shape))
-                ).view(B,*next_state_shape)
-        pred_q_map = self.policy(state_map)
+            next_vals = self.target_policy(non_final_next_states).detach().view(B,-1).max(-1)[0] # (B,)
+            next_vals = rewards + (self.discount_factor * \
+                torch.eye(B, device=device)[non_final_state_mask].T @ next_vals)
 
-        td_loss: torch.Tensor = self.qmap_loss(pred_q_map, target_q_map)
+        pred_q_map = self.policy(state_map)
+        current_vals = pred_q_map.view(B, -1).gather(1, actions.unsqueeze(1)).squeeze(1)
+
+        td_loss: torch.Tensor = self.td_loss(current_vals, next_vals)
 
         # diffusion loss
         if self.boot_strapped_policy is None:
@@ -419,6 +419,7 @@ class ActionDiffuserTrainer(DiffTrainerBase):
                  critic_optim_type=torch.optim.Adam,
                  critic_optim_params={'lr':1e-4, 'weight_decay': 1e-5},
                  critic_loss=torch.nn.MSELoss(),
+                 clipped_grad_norm=1.0,
                  action_channel = 1,
                  height = 96, width= 96
                  ) -> None:
@@ -433,6 +434,7 @@ class ActionDiffuserTrainer(DiffTrainerBase):
         self.update_ema_every = update_ema_every
         self.critic_xfer_period = critic_xfer_period
         self.critic_tau = critic_tau
+        self.clipped_grad_norm = clipped_grad_norm
         self.height = height
         self.width = width
         self.action_channel = action_channel
@@ -494,6 +496,8 @@ class ActionDiffuserTrainer(DiffTrainerBase):
 
         # backpropagation
         actor_loss.backward()
+        actor_grad_norms = torch.nn.utils.clip_grad_norm_(
+            self.actor.parameters(), max_norm=self.clipped_grad_norm, norm_type=2)
         self.optimizer.step()
         self.optimizer.zero_grad()
         self.lr_scheduler.step()
