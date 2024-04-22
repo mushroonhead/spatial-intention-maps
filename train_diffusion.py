@@ -23,11 +23,12 @@ from envs import VectorEnv
 # from diffusers.models import UNet2DConditionModel
 from diffusers.schedulers import DDPMScheduler
 from diffusers.training_utils import EMAModel
-from agents.diffusion2 import DiffusionPolicy, TDErrorQMapDiffTrainer
+from agents.diffusion2 import DiffusionPolicy, TDErrorQMapDiffTrainer, ActionDiffuserTrainer, TwinQNetwork, StateBasedDiffuser
 from intention_encoder_trainers import IntEncoderTrainer
 import networks
 from bootstrapped_policies import RandomPolicy, GreedyQMax
 from typing import Iterable, Tuple, Optional
+import resnet
 
 torch.backends.cudnn.benchmark = True
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -167,13 +168,15 @@ def build_diff_trainer(cfg, robot_type, num_diffusion_iter=100,
     state_channel = cfg.num_input_channels
     action_channel = VectorEnv.get_num_output_channels(robot_type)
     # net
+    conditional_encoder = resnet.resnet_N(layers=[2,], features_only=True, num_input_channels=5)
+    noise_model = networks.CondMLP(64*24*24, 2, 16).to(device)
     # conditional_encoder = networks.LightWeightBottleneck(state_channel).to(device)
-    conditional_encoder = networks.LightEncoderFCN(state_channel).to(device)
-    noise_model = networks.LightConditionalNetwork(
-        VectorEnv.get_num_output_channels(robot_type),
-        256,
-        repeat_enc=False
-        ).to(device)
+    # conditional_encoder = networks.LightEncoderFCN(state_channel).to(device)
+    # noise_model = networks.LightConditionalNetwork(
+    #     VectorEnv.get_num_output_channels(robot_type),
+    #     256,
+    #     repeat_enc=False
+    #     ).to(device)
     noise_scheduler = DDPMScheduler(
         num_train_timesteps=num_diffusion_iter,
         beta_schedule='squaredcos_cap_v2',
@@ -193,12 +196,32 @@ def build_diff_trainer(cfg, robot_type, num_diffusion_iter=100,
     # trainer
     training_start = np.round(cfg.learning_starts_frac * cfg.total_timesteps).astype(np.uint32)
     num_training_steps = np.ceil((cfg.total_timesteps - training_start)/ cfg.train_freq).astype(np.uint32)
-    trainer = TDErrorQMapDiffTrainer(
+    # trainer = TDErrorQMapDiffTrainer(
+    #     diff_model=policy,
+    #     discount_factor=0.9,
+    #     num_training_steps=num_training_steps,
+    #     target_transfer_period=cfg.target_update_freq,
+    #     boot_strapped_policy=bootstrap_policy)
+    policy = StateBasedDiffuser(
+        inp_dims=(state_channel,height,width), output_dims=(2,),
+        num_diffusion_iter=num_diffusion_iter,
+        noise_model=noise_model,
+        conditional_encoder=conditional_encoder,
+        noise_scheduler=noise_scheduler,
+        ema=ema,
+        tensor_kwargs=tensor_kwargs).to(device)
+    twin_q = TwinQNetwork(
+        networks.FCN(state_channel, action_channel),
+        networks.FCN(state_channel, action_channel)).to(device)
+    trainer = ActionDiffuserTrainer(
         diff_model=policy,
-        discount_factor=0.9,
+        critic_model=twin_q,
         num_training_steps=num_training_steps,
-        target_transfer_period=cfg.target_update_freq,
-        boot_strapped_policy=bootstrap_policy)
+        discount_factor=0.9,
+        policy_eta=1.0,
+        update_ema_every=5,
+        critic_tau=0.005,
+        critic_xfer_period=2)
 
     return policy, trainer
 
@@ -228,6 +251,7 @@ def query_actions(states: Iterable[Iterable],
                   policies: Iterable[torch.nn.Module],
                   bootstrapped_policies: Iterable[torch.nn.Module],
                   exploration_eps: float,
+                  qmap_mode = False,
                   debug: bool=False) -> Iterable:
     """
     - Inputs:
@@ -249,7 +273,6 @@ def query_actions(states: Iterable[Iterable],
     outputs = []
 
     #TODO: change this into a batch evaluation
-
     with torch.no_grad():
         for group_i_states, policy, bs_policy in zip(states, policies, bootstrapped_policies):
             group_i_actions = []
@@ -262,8 +285,12 @@ def query_actions(states: Iterable[Iterable],
                     state = torch.tensor(state, device=device).permute(2,0,1).unsqueeze(0)
                     if debug or not run_bootstrap:
                         output = policy(state).squeeze(0)
-                    action = bs_policy(state).item() if run_bootstrap \
-                        else output.view(-1).argmax().item()
+                    if run_bootstrap:
+                        action = bs_policy(state).item()
+                    elif qmap_mode:
+                        action = output.view(-1).argmax().item()
+                    else:
+                        action = output.cpu().numpy()
                     if debug or not run_bootstrap:
                         output = output.cpu().numpy()
 
@@ -272,7 +299,7 @@ def query_actions(states: Iterable[Iterable],
             actions.append(group_i_actions)
             outputs.append(group_i_outputs)
 
-    info = {'output':outputs} if debug else {}
+    info = {'output':outputs} if debug and qmap_mode else {}
 
     return actions, info
 
@@ -333,7 +360,7 @@ def encode_intentions(states: Iterable[Iterable],
 
 ########
 
-def main(cfg, log_scalars=True, log_visuals=True):
+def main(cfg, log_scalars=True, log_visuals=False):
     # Set up logging and checkpointing
     log_dir = Path(cfg.log_dir)
     checkpoint_dir = Path(cfg.checkpoint_dir)
@@ -435,13 +462,16 @@ def main(cfg, log_scalars=True, log_visuals=True):
 
                 batch_state_map = torch.stack(
                     [torch.tensor(s, device=device).permute(2,0,1) for s in batch.state])           # (B, C, 96, 96)
-                batched_actions = torch.tensor(batch.action, dtype=torch.long, device=device)       # (B,)
-                batched_rewards = torch.tensor(batch.reward, dtype=torch.float32, device=device)    # (B,)
-                non_final_next_states = [torch.tensor(s, device=device).permute(2,0,1)
-                                         for s in batch.next_state if s is not None]
-                non_final_next_states = torch.stack(non_final_next_states) \
-                    if len(non_final_next_states) > 0 \
-                    else torch.zeros(0, *batch_state_map.shape[-3:], device=device)                 # (<=B, C, 96, 96)
+                batched_actions = torch.tensor(np.stack(batch.action), dtype=torch.int64, device=device)       # (B,)
+                batched_rewards = torch.tensor(np.stack(batch.reward), dtype=torch.float32, device=device)    # (B,)
+                try:
+                    non_final_next_states = [torch.tensor(s, device=device).permute(2,0,1)
+                                            for s in batch.next_state if s is not None]
+                    non_final_next_states = torch.stack(non_final_next_states) \
+                        if len(non_final_next_states) > 0 \
+                        else torch.zeros(0, *batch_state_map.shape[-3:], device=device)                 # (<=B, C, 96, 96)
+                except Exception as e:
+                    print(type(non_final_next_states))
                 non_final_state_mask = torch.tensor([s is not None for s in batch.next_state])      # (B,)
 
                 # train policies

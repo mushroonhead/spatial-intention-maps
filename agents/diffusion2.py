@@ -9,6 +9,9 @@ from diffusers.schedulers import SchedulerMixin
 from diffusers.optimization import get_scheduler
 from typing import Optional
 
+from torch.nn.modules import MSELoss, Module
+from torch.optim.adamw import AdamW as AdamW
+
 class DiffusionPolicy(torch.nn.Module):
     def __init__(self,
                  inp_dims: torch.Size, output_dims: torch.Size,
@@ -77,7 +80,7 @@ class DiffusionPolicy(torch.nn.Module):
 
         return state_dict
 
-class QMapDiffTrainerBase:
+class DiffTrainerBase:
     """
     Base Qmap trainer for Diffusion Policy
     """
@@ -120,7 +123,7 @@ class QMapDiffTrainerBase:
         inp_cond = inp_cond.view(-1, *self.policy.inp_dims)
 
         # sample noise
-        noise = torch.randn(output_target.shape, device=output_target.device, dtype=output_target.dtype)
+        noise = torch.randn(output_target.shape, device=output_target.device)
 
         # random timesteps
         timesteps = torch.randint(
@@ -145,7 +148,7 @@ class QMapDiffTrainerBase:
                 'policy_lr':self.lr_scheduler.state_dict()}
 
 
-class TDErrorQMapDiffTrainer(QMapDiffTrainerBase):
+class TDErrorQMapDiffTrainer(DiffTrainerBase):
     """
     Treats output of policy as a qvalue map,
     allows an optional bootstrapped policy to guide the initial training
@@ -248,7 +251,7 @@ class TwinQNetwork(torch.nn.Module):
         return self.critic_1(x), self.critic_2(x)
 
 
-class DQCriticQMapDiffTrainer(QMapDiffTrainerBase):
+class DQCriticQMapDiffTrainer(DiffTrainerBase):
     """
     Treats output of policy as a qvalue map
     """
@@ -351,3 +354,155 @@ class DQCriticQMapDiffTrainer(QMapDiffTrainerBase):
         # losses
         return {'critic_td_error':critic_td_error.item(),
                 'bc_loss':bc_loss.item()}
+
+
+class StateBasedDiffuser(DiffusionPolicy):
+    def __init__(self,
+                 inp_dims: torch.Size, output_dims: torch.Size,
+                 num_diffusion_iter: int, noise_model: Module,
+                 conditional_encoder: Module, noise_scheduler: SchedulerMixin,
+                 ema: EMAModel | None, tensor_kwargs: dict, *args, **kwargs) -> None:
+        super().__init__(inp_dims, output_dims, num_diffusion_iter, noise_model,
+                         conditional_encoder, noise_scheduler, ema, tensor_kwargs, *args, **kwargs)
+        self.action_channel, self.height, self.width = inp_dims
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        - Inputs:
+            - x: (...,inp_dim..)  tensor
+        - Returns:
+            - out: (...,out_dim...) tensor
+        """
+        x = self.normalize_obs(x)
+        action = super().forward(x)
+        action = self.unnormalize_action(action)
+
+        return action
+
+    def normalize_obs(self, state: torch.Tensor) -> torch.Tensor:
+        state = 2*state - 1
+        return state
+
+    def normalize_action(self, a: torch.IntTensor) -> torch.Tensor:
+        num_cells = (self.height * self.width)
+        c = a //num_cells
+        assert (c == 0).all()
+
+        rem = a % num_cells
+        y = rem // self.width
+        x = rem % self.width
+
+        x = (x + 0.5) / (self.width + 1)
+        x = 2*x -1
+        y = (y + 0.5) / (self.width + 1)
+        y = 2*y -1
+
+        return torch.stack((x,y), dim=-1)
+
+    def unnormalize_action(self, x: torch.Tensor) -> torch.IntTensor:
+        x = (x + 1)/2 * self.width
+        x = x.floor().long().clamp(min=0, max=self.width-1)
+        return x[...,1] * self.width + x[...,0]
+
+
+class ActionDiffuserTrainer(DiffTrainerBase):
+    def __init__(self, diff_model: DiffusionPolicy,
+                 critic_model : TwinQNetwork,
+                 discount_factor: float, num_training_steps: int,
+                 policy_eta: float,
+                 update_ema_every: float,
+                 critic_tau: float,
+                 critic_xfer_period,
+                 diff_loss: Module = torch.nn.MSELoss(),
+                 optim_type=torch.optim.AdamW,
+                 optim_params={ 'lr': 0.0001,'weight_decay': 0.000001 },
+                 critic_optim_type=torch.optim.Adam,
+                 critic_optim_params={'lr':1e-4, 'weight_decay': 1e-5},
+                 critic_loss=torch.nn.MSELoss(),
+                 action_channel = 1,
+                 height = 96, width= 96
+                 ) -> None:
+        super().__init__(diff_model, discount_factor, num_training_steps, diff_loss, optim_type, optim_params)
+        self.critic = critic_model
+        self.target = deepcopy(critic_model)
+        self.critic_optim = critic_optim_type(
+            self.critic.parameters(),
+            **critic_optim_params)
+        self.critic_loss = critic_loss
+        self.policy_eta = policy_eta
+        self.update_ema_every = update_ema_every
+        self.critic_xfer_period = critic_xfer_period
+        self.critic_tau = critic_tau
+        self.height = height
+        self.width = width
+        self.action_channel = action_channel
+
+    def train(self, training_iter: int,
+              state_map: torch.Tensor, actions: torch.Tensor,
+              rewards: torch.Tensor, non_final_next_states: torch.Tensor,
+              non_final_state_mask: torch.BoolTensor) -> dict:
+        B = state_map.shape[0]
+        device = state_map.device
+
+        ## q learning
+        current_q1, current_q2 = self.critic(state_map) # (32, 2, 96, 96)
+
+        state_action_values_1 = current_q1.view(B, -1).gather(1, actions.unsqueeze(1)).squeeze(1)  # (32,)
+        state_action_values_2 = current_q2.view(B, -1).gather(1, actions.unsqueeze(1)).squeeze(1)  # (32,)
+        next_state_values_1 = torch.zeros(B, dtype=torch.float32, device=device)  # (32,)
+        next_state_values_2 = torch.zeros(B, dtype=torch.float32, device=device)  # (32,)
+
+        with torch.no_grad():
+            next_q1, next_q2 = self.target(non_final_next_states) #(>=32,96,96)
+            if non_final_next_states.size(0) > 0:
+                next_state_values_1[non_final_state_mask] = next_q1.view(non_final_next_states.size(0), -1).max(1)[0].detach()  # (<=32,)
+                next_state_values_2[non_final_state_mask] = next_q2.view(non_final_next_states.size(0), -1).max(1)[0].detach()  # (<=32,)
+
+            expected_state_action_values_1 = (rewards + self.discount_factor * next_state_values_1)  # (32,)
+            expected_state_action_values_2 = (rewards + self.discount_factor * next_state_values_2)  # (32,)
+            expected_state_action_values = torch.minimum(expected_state_action_values_1, expected_state_action_values_2) # (32,)
+
+        critic_td_error = self.critic_loss(state_action_values_1, expected_state_action_values) + \
+            self.critic_loss(state_action_values_2, expected_state_action_values)
+
+        # possible gradient clipping
+        critic_td_error.backward()
+        self.critic_optim.step()
+        self.critic_optim.zero_grad()
+
+        if (training_iter +1) % self.critic_xfer_period == 0:
+            # soft policy update for critic
+            for param, target_param in zip(self.critic.parameters(), self.target.parameters()):
+                target_param.data.copy_(self.critic_tau * param.data + (1 - self.critic_tau) * target_param.data)
+
+        ## diffusion learning
+
+        # diffusion loss
+        a = self.policy.normalize_action(actions)
+        bc_loss = self.get_diffusion_loss(a, state_map)
+        pred_action = self.policy(state_map)
+        q1_new_action, q2_new_action = self.critic(state_map)
+        q1_new_action = q1_new_action.view(B, -1).gather(1, pred_action.unsqueeze(1)).squeeze(1)  # (32,)
+        q2_new_action = q2_new_action.view(B, -1).gather(1, pred_action.unsqueeze(1)).squeeze(1)  # (32,)
+
+        if torch.rand([]) > 0.5:
+            q_loss = - q1_new_action.mean() / q2_new_action.abs().mean().detach()
+        else:
+            q_loss = - q2_new_action.mean() / q1_new_action.abs().mean().detach()
+
+        actor_loss = bc_loss + self.policy_eta * q_loss
+
+        # backpropagation
+        actor_loss.backward()
+        self.optimizer.step()
+        self.optimizer.zero_grad()
+        self.lr_scheduler.step()
+
+        # delaed step
+        if (training_iter+1) % self.update_ema_every == 0:
+            self.policy.step_ema()
+
+        # losses
+        return {'td_loss':critic_td_error.item(),
+                'diff_loss':bc_loss.item(),
+                'loss':actor_loss.item()}

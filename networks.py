@@ -5,6 +5,7 @@ from typing import Union
 
 import resnet
 from agents.helpers import SinusoidalPosEmb
+from agents.model import MLP
 
 class Interpolate(torch.nn.Module):
     """
@@ -186,8 +187,69 @@ class LightConditionalNetwork(torch.nn.Module):
         """
         return encoder_hidden_states
 
+class CondMLP(torch.nn.Module):
+    def __init__(self,
+                 state_dim,
+                 action_dim,
+                 t_dim=16,
+                 *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.time_mlp = nn.Sequential(
+            SinusoidalPosEmb(t_dim),
+            nn.Linear(t_dim, t_dim * 2),
+            nn.ReLU(),
+            nn.Linear(t_dim * 2, t_dim),
+        )
+        self.a_mlp = torch.nn.Sequential(
+            torch.nn.Linear(action_dim, 32),
+            torch.nn.Mish(),
+            torch.nn.Linear(32, 64),
+            torch.nn.Mish(),
+            torch.nn.Linear(64, 128),
+        )
+        input_dim = state_dim + 128 + t_dim
+        self.bot_layer = nn.Sequential(nn.Linear(input_dim, 1024),
+                                       nn.Mish(),
+                                       nn.Linear(1024, 128),
+                                       nn.Mish(),
+                                       nn.Linear(128, 64),
+                                       nn.Mish(),
+                                       nn.Linear(64, action_dim))
+
+    def forward(self, sample: torch.Tensor, timestep: torch.IntTensor,
+                encoder_hidden_states: torch.Tensor) -> torch.Tensor:
+        B = sample.shape[0]
+        x_enc = self.a_mlp(sample)
+        if timestep.ndim < 1:
+            timestep = timestep.unsqueeze(-1) #(1,)
+        t_enc = self.time_mlp(timestep.to(sample.device)).expand(B,-1)
+        x = torch.cat([x_enc, t_enc, encoder_hidden_states.flatten(start_dim=-3)], dim=1)
+        x = self.bot_layer(x)
+
+        return x
+
 
 if __name__ == '__main__':
+    state = torch.randn(32, 5, 96,96)
+    action = torch.randn(32,2)
+    t = torch.randint(0,100, (32,))
+
+    resf = resnet.resnet_N(layers=[2,], features_only=True, num_input_channels=5)
+    enc = resf(state)
+    cond_mlp = CondMLP(64*24*24, 2, 16)
+    pred_noise = cond_mlp(sample=action, timestep=t,
+                          encoder_hidden_states=enc)
+
+    print(pred_noise.shape)
+
+
+    # # light bottleneck
+    # C = 5
+    # x = torch.randn(32,C,96,96)
+    # model = LightWeightBottleneck(C)(x)
+
+    # x.shape
+
     # # test LightUnet
     # C = 5
     # x = torch.randn(32,C,96,96)
@@ -215,16 +277,16 @@ if __name__ == '__main__':
     # y = res(x)
     # print(y.shape)
 
-    # resf = resnet.resnet18(layers=[2,2,2], features_only=True, num_input_channels=C)
+    # resf = resnet.resnet_N(layers=[2,2,2], features_only=True, num_input_channels=C)
     # y2 = resf(x)
     # print(y2.shape)
 
-    C = 5
+    # C = 5
 
-    x = torch.randn(32, C, 96, 96)
+    # x = torch.randn(32, C, 96, 96)
 
-    lfcn = LightEncoderFCN(C)
-    y = lfcn(x)
-    print(y.shape)
+    # lfcn = LightEncoderFCN(C)
+    # y = lfcn(x)
+    # print(y.shape)
 
     pass
