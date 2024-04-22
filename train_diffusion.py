@@ -437,9 +437,11 @@ def main(cfg, log_scalars=True, log_visuals=True):
                     [torch.tensor(s, device=device).permute(2,0,1) for s in batch.state])           # (B, C, 96, 96)
                 batched_actions = torch.tensor(batch.action, dtype=torch.long, device=device)       # (B,)
                 batched_rewards = torch.tensor(batch.reward, dtype=torch.float32, device=device)    # (B,)
-                non_final_next_states = torch.stack(
-                    [torch.tensor(s, device=device).permute(2,0,1) for s in batch.next_state \
-                     if s is not None])                                                             # (<=B, C, 96, 96)
+                non_final_next_states = [torch.tensor(s, device=device).permute(2,0,1)
+                                         for s in batch.next_state if s is not None]
+                non_final_next_states = torch.stack(non_final_next_states) \
+                    if len(non_final_next_states) > 0 \
+                    else torch.zeros(0, *batch_state_map.shape[-3:], device=device)                 # (<=B, C, 96, 96)
                 non_final_state_mask = torch.tensor([s is not None for s in batch.next_state])      # (B,)
 
                 # train policies
