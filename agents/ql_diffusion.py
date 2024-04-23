@@ -14,11 +14,20 @@ from agents.diffusion import Diffusion
 from agents.model import MLP
 from agents.helpers import EMA
 
+import resnet
+
 
 class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
+    def __init__(self, state_dim, action_dim, fcn_input_channels, fcn_output_channels, one_channel_state_dim, hidden_dim=256):
         super(Critic, self).__init__()
-        self.q1_model = nn.Sequential(nn.Linear(state_dim + action_dim, hidden_dim),
+        self.resnet18 = resnet.resnet18(num_input_channels=fcn_input_channels)
+        self.conv1 = nn.Conv2d(512, 128, kernel_size=1, stride=1)
+        self.bn1 = nn.BatchNorm2d(128)
+        self.conv2 = nn.Conv2d(128, 32, kernel_size=1, stride=1)
+        self.bn2 = nn.BatchNorm2d(32)
+        self.conv3 = nn.Conv2d(32, fcn_output_channels, kernel_size=1, stride=1)
+
+        self.q1_model = nn.Sequential(nn.Linear(fcn_output_channels*one_channel_state_dim  + action_dim, hidden_dim),
                                       nn.Mish(),
                                       nn.Linear(hidden_dim, hidden_dim),
                                       nn.Mish(),
@@ -26,21 +35,40 @@ class Critic(nn.Module):
                                       nn.Mish(),
                                       nn.Linear(hidden_dim, 1))
 
-        self.q2_model = nn.Sequential(nn.Linear(state_dim + action_dim, hidden_dim),
+        self.q2_model = nn.Sequential(nn.Linear(fcn_output_channels*one_channel_state_dim  + action_dim, hidden_dim),
                                       nn.Mish(),
                                       nn.Linear(hidden_dim, hidden_dim),
                                       nn.Mish(),
                                       nn.Linear(hidden_dim, hidden_dim),
                                       nn.Mish(),
                                       nn.Linear(hidden_dim, 1))
+    
+    def state_through_resnet(self, state):
+        state = self.resnet18.features(state)
+        state = self.conv1(state)
+        state = self.bn1(state)
+        state = F.relu(state)
+        state = F.interpolate(state, scale_factor=2, mode='bilinear', align_corners=True)
+        state = self.conv2(state)
+        state = self.bn2(state)
+        state = F.relu(state)
+        state = F.interpolate(state, scale_factor=2, mode='bilinear', align_corners=True)
+        state = self.conv3(state)
+        if state.shape[1] != 1 or state.shape[2] != 96 or state.shape[3] != 96:
+            raise Exception("ERROR: state dimension is not batch_size * 1 * 96 * 96, error is in model.py")
+
+        return state
 
     def forward(self, state, action):
         #print(state.shape,action.shape)
-        x = torch.cat([state.flatten(start_dim=-3), action], dim=-1)
+        x = self.state_through_resnet(state)
+        x = torch.cat([x.flatten(start_dim=-3), action], dim=-1)
         return self.q1_model(x), self.q2_model(x)
 
     def q1(self, state, action):
-        x = torch.cat([state.flatten(start_dim=-3), action], dim=-1)
+        #x = torch.cat([state.flatten(start_dim=-3), action], dim=-1)
+        x = self.state_through_resnet(state)
+        x = torch.cat([x.flatten(start_dim=-3), action], dim=-1)
         return self.q1_model(x)
 
     def q_min(self, state, action):
@@ -89,7 +117,7 @@ class Diffusion_QL(object):
         self.ema_model = copy.deepcopy(self.actor)
         self.update_ema_every = update_ema_every
 
-        self.critic = Critic(state_dim, action_dim).to(device)
+        self.critic = Critic(state_dim, action_dim,fcn_input_channels,fcn_output_channels,one_channel_state_dim).to(device)
         self.critic_target = copy.deepcopy(self.critic)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=3e-4)
 

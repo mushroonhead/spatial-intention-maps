@@ -20,7 +20,7 @@ module load cuda/11.8.0
 source /home/cyinyong/eecs602/envs/spatial_int_maps_3_10_4/bin/activate
 
 # run trainer
-python train.py --config-path /home/cyinyong/eecs602/actor-critic-fcn/spatial-intention-maps/config/experiments/ours/pushing_4-small_divider-ours.yml
+python train.py --config-path /home/cyinyong/eecs602/actor-critic-fcn-v3/spatial-intention-maps/config/experiments/ours/pushing_4-small_divider-ours.yml
 
 # close modules
 deactivate
