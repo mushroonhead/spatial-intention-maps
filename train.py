@@ -241,13 +241,15 @@ def main(cfg):
     one_channel_state_dim = 96*96
     num_input_channels = (cfg.num_input_channels) 
     state_dim = num_input_channels * one_channel_state_dim 
-    discount = 0.99 #default values from QL diffusion
-    tau = 0.05 #default values from QL diffusion
+    #discount = 0.99 #default values from QL diffusion
+    tau = 0.5 #default values from QL diffusion
+    ema_decay = 0.5
     
     diffusion_models = []
     for robot_type in robot_group_types:
         num_output_channels = VectorEnv.get_num_output_channels(robot_type)
         action_dim = num_output_channels*one_channel_state_dim 
+        discount = cfg.discount_factors[0]
         agent = Diffusion_QL(state_dim=state_dim,
                  action_dim=action_dim,
                  fcn_input_channels = num_input_channels, 
@@ -256,7 +258,8 @@ def main(cfg):
                  max_action=1000.0,
                  device=device,
                  discount=discount,
-                 tau=tau)
+                 tau=tau,
+                 ema_decay = ema_decay)
         diffusion_models.append(agent)
 
     # Optimizers
@@ -307,7 +310,7 @@ def main(cfg):
     #print(state)
     transition_tracker = TransitionTracker(state)
     learning_starts = np.round(cfg.learning_starts_frac * cfg.total_timesteps).astype(np.uint32)
-    learning_starts = 50
+    #learning_starts = 50
     total_timesteps_with_warm_up = learning_starts + cfg.total_timesteps
     for timestep in tqdm(range(start_timestep, total_timesteps_with_warm_up), initial=start_timestep, total=total_timesteps_with_warm_up, file=sys.stdout):
         # Select an action for each robot
