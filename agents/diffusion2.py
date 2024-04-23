@@ -393,9 +393,9 @@ class StateBasedDiffuser(DiffusionPolicy):
         y = rem // self.width
         x = rem % self.width
 
-        x = (x + 0.5) / (self.width + 1)
+        x = (x + 0.5) / self.width
         x = 2*x -1
-        y = (y + 0.5) / (self.width + 1)
+        y = (y + 0.5) / self.width
         y = 2*y -1
 
         return torch.stack((x,y), dim=-1)
@@ -498,7 +498,7 @@ class ActionDiffuserTrainer(DiffTrainerBase):
         # backpropagation
         actor_loss.backward()
         actor_grad_norms = torch.nn.utils.clip_grad_norm_(
-            self.actor.parameters(), max_norm=self.clipped_grad_norm, norm_type=2)
+            self.policy.parameters(), max_norm=self.clipped_grad_norm, norm_type=2)
         self.optimizer.step()
         self.optimizer.zero_grad()
         self.lr_scheduler.step()

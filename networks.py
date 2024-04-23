@@ -187,9 +187,28 @@ class LightConditionalNetwork(torch.nn.Module):
         """
         return encoder_hidden_states
 
+class TighterEnc(torch.nn.Module):
+    def __init__(self, state_channel: int,
+                 *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.resnet = resnet.resnet_N([2,2], True,
+                                      num_input_channels=state_channel)
+        self.mlp = torch.nn.Sequential(
+            torch.nn.Linear(24*24*128, 1024),
+            torch.nn.Mish(),
+            torch.nn.Linear(1024, 512),
+            torch.nn.Mish(),
+            torch.nn.Linear(512, 128))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.resnet(x)
+        x = self.mlp(x.flatten(-3))
+
+        return x
+
 class CondMLP(torch.nn.Module):
     def __init__(self,
-                 state_dim,
+                 enc_dim,
                  action_dim,
                  t_dim=16,
                  *args, **kwargs) -> None:
@@ -197,7 +216,7 @@ class CondMLP(torch.nn.Module):
         self.time_mlp = nn.Sequential(
             SinusoidalPosEmb(t_dim),
             nn.Linear(t_dim, t_dim * 2),
-            nn.ReLU(),
+            nn.Mish(),
             nn.Linear(t_dim * 2, t_dim),
         )
         self.a_mlp = torch.nn.Sequential(
@@ -207,7 +226,7 @@ class CondMLP(torch.nn.Module):
             torch.nn.Mish(),
             torch.nn.Linear(64, 128),
         )
-        input_dim = state_dim + 128 + t_dim
+        input_dim = enc_dim + 128 + t_dim
         self.bot_layer = nn.Sequential(nn.Linear(input_dim, 1024),
                                        nn.Mish(),
                                        nn.Linear(1024, 128),
@@ -223,7 +242,7 @@ class CondMLP(torch.nn.Module):
         if timestep.ndim < 1:
             timestep = timestep.unsqueeze(-1) #(1,)
         t_enc = self.time_mlp(timestep.to(sample.device)).expand(B,-1)
-        x = torch.cat([x_enc, t_enc, encoder_hidden_states.flatten(start_dim=-3)], dim=1)
+        x = torch.cat([x_enc, t_enc, encoder_hidden_states.flatten(start_dim=1)], dim=1)
         x = self.bot_layer(x)
 
         return x
@@ -322,34 +341,48 @@ if __name__ == '__main__':
     # y = lfcn(x)
     # print(y.shape)
 
-    ###################
+    ################### State net
 
     # state = torch.randn(32, 5, 96,96)
     # action = torch.randn(32,2)
     # t = torch.randint(0,100, (32,))
 
-    # resf = resnet.resnet_N(layers=[2,], features_only=True, num_input_channels=5)
+    # resf = resnet.resnet_N(layers=[2,2], features_only=True, num_input_channels=5)
     # enc = resf(state)
-    # cond_mlp = CondMLP(64*24*24, 2, 16)
+    # cond_mlp = CondMLP(128*24*24, 2, 16)
     # pred_noise = cond_mlp(sample=action, timestep=t,
     #                       encoder_hidden_states=enc)
 
     # print(pred_noise.shape)
 
+    #################### State net 2
+
+    state = torch.randn(32, 5, 96,96)
+    action = torch.randn(32,2)
+    t = torch.randint(0,100, (32,))
+
+    encoder = TighterEnc(5)
+    hidden = encoder(state)
+    cond_mlp = CondMLP(128, 2, 128)
+    pred_noise = cond_mlp(sample=action, timestep=t,
+                          encoder_hidden_states=hidden)
+
+    print(pred_noise.shape)
+
 
     ############# Image net 2
 
-    state = torch.randn(32, 5, 96,96)
-    action = torch.randn(32, 1, 96,96)
-    t = torch.randint(0,100, (32,))
+    # state = torch.randn(32, 5, 96,96)
+    # action = torch.randn(32, 1, 96,96)
+    # t = torch.randint(0,100, (32,))
 
-    resf = resnet.resnet_N(layers=[2,2,2], features_only=True, num_input_channels=5)
-    enc = resf(state)
-    cond_mlp = LightCondUnet2D(256,1,16)
-    pred_noise = cond_mlp(sample=action, timestep=t,
-                          encoder_hidden_states=enc)
+    # resf = resnet.resnet_N(layers=[2,2,2], features_only=True, num_input_channels=5)
+    # enc = resf(state)
+    # cond_mlp = LightCondUnet2D(256,1,16)
+    # pred_noise = cond_mlp(sample=action, timestep=t,
+    #                       encoder_hidden_states=enc)
 
-    print(pred_noise.shape)
+    # print(pred_noise.shape)
 
 
     pass
