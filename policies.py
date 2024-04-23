@@ -22,7 +22,7 @@ class DQNPolicy:
         self.policy_nets = self.build_policy_nets()
 
         # Resume if applicable
-        if self.cfg.checkpoint_path is not None:
+        if self.cfg.policy_path is not None:
             self.policy_checkpoint = torch.load(self.cfg.policy_path, map_location=self.device)
             for i in range(self.num_robot_groups):
                 self.policy_nets[i].load_state_dict(self.policy_checkpoint['state_dicts'][i])
@@ -77,7 +77,7 @@ class DQNIntentionPolicy(DQNPolicy):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.intention_nets = self.build_intention_nets()
-        if self.cfg.checkpoint_path is not None:
+        if self.cfg.policy_path is not None:
             for i in range(self.num_robot_groups):
                 self.intention_nets[i].load_state_dict(self.policy_checkpoint['state_dicts_intention'][i])
                 if self.train:
