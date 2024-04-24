@@ -255,10 +255,11 @@ def main(cfg):
                  fcn_input_channels = num_input_channels, 
                  fcn_output_channels = num_output_channels,
                  one_channel_state_dim = one_channel_state_dim,
-                 max_action=1000.0,
+                 max_action=1.0,
                  device=device,
                  discount=discount,
                  tau=tau,
+                 lr = 1e-4,
                  ema_decay = ema_decay)
         diffusion_models.append(agent)
 

@@ -122,8 +122,8 @@ class Diffusion_QL(object):
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=3e-4)
 
         if lr_decay:
-            self.actor_lr_scheduler = CosineAnnealingLR(self.actor_optimizer, T_max=lr_maxt, eta_min=0.)
-            self.critic_lr_scheduler = CosineAnnealingLR(self.critic_optimizer, T_max=lr_maxt, eta_min=0.)
+            self.actor_lr_scheduler = CosineAnnealingLR(self.actor_optimizer, T_max=lr_maxt, eta_min=0.1)
+            self.critic_lr_scheduler = CosineAnnealingLR(self.critic_optimizer, T_max=lr_maxt, eta_min=0.1)
 
         self.state_dim = state_dim
         self.max_action = max_action
@@ -198,7 +198,7 @@ class Diffusion_QL(object):
             self.critic_optimizer.step()
 
             """ Policy Training """
-            bc_loss = self.actor.loss(action, state)
+            """bc_loss = self.actor.loss(action, state)
             new_action = self.actor(state)
 
             q1_new_action, q2_new_action = self.critic(state, new_action)
@@ -212,15 +212,32 @@ class Diffusion_QL(object):
             actor_loss.backward()
             if self.grad_norm > 0: 
                 actor_grad_norms = nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=self.grad_norm, norm_type=2)
-            self.actor_optimizer.step()
+            self.actor_optimizer.step()"""
 
-
-            """ Step Target network """
+            """ Train policy network only every few iterations """
             if self.step % self.update_ema_every == 0:
+                """ Train policy network """ 
+                bc_loss = self.actor.loss(action, state)
+                new_action = self.actor(state)
+
+                q1_new_action, q2_new_action = self.critic(state, new_action)
+                if np.random.uniform() > 0.5:
+                    q_loss = - q1_new_action.mean() / q2_new_action.abs().mean().detach()
+                else:
+                    q_loss = - q2_new_action.mean() / q1_new_action.abs().mean().detach()
+                actor_loss = bc_loss + self.eta * q_loss
+
+                self.actor_optimizer.zero_grad()
+                actor_loss.backward()
+                if self.grad_norm > 0: 
+                    actor_grad_norms = nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=self.grad_norm, norm_type=2)
+                self.actor_optimizer.step()
+
+                """ Step Target network """  
                 self.step_ema()
 
-            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+                    target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
             self.step += 1
 
