@@ -324,7 +324,7 @@ def main(cfg):
     #print(state)
     transition_tracker = TransitionTracker(state)
     learning_starts = np.round(cfg.learning_starts_frac * cfg.total_timesteps).astype(np.uint32)
-    learning_starts = 50
+    #learning_starts = 50
     total_timesteps_with_warm_up = learning_starts + cfg.total_timesteps
     for timestep in tqdm(range(start_timestep, total_timesteps_with_warm_up), initial=start_timestep, total=total_timesteps_with_warm_up, file=sys.stdout):
         # Select an action for each robot
