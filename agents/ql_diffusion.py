@@ -148,6 +148,8 @@ class Diffusion_QL(object):
     def train(self, replay_buffer, iterations, batch_size=100, log_writer=None):
 
         #metric = {'bc_loss': [], 'ql_loss': [], 'actor_loss': [], 'critic_loss': []}
+        metric = {}
+        
         for _ in range(iterations):
             # Sample replay buffer / batch
             #state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
@@ -238,6 +240,10 @@ class Diffusion_QL(object):
 
                 for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
                     target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                
+                metric['actor_loss'] = actor_loss.item()
+                metric['bc_loss'] = bc_loss.item()
+                metric['ql_loss'] = q_loss.item()
 
             self.step += 1
 
@@ -255,10 +261,7 @@ class Diffusion_QL(object):
             #metric['bc_loss'].append(bc_loss.item())
             #metric['ql_loss'].append(q_loss.item())
             #metric['critic_loss'].append(critic_loss.item())
-            metric = {}
-            metric['actor_loss'] = actor_loss.item()
-            metric['bc_loss'] = bc_loss.item()
-            metric['ql_loss'] = q_loss.item()
+                        
             metric['critic_loss'] = critic_loss.item()
 
             print(metric)

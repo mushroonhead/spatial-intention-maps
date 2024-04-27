@@ -171,7 +171,7 @@ def step_diffusion_model(state, diffusion_models, robot_group_types, train = Tru
     #if exploration_eps is None:
     #    exploration_eps = self.cfg.final_exploration
     action = [[None for _ in g] for g in state]
-    #output = [[None for _ in g] for g in state]
+    output = [[None for _ in g] for g in state]
     with torch.no_grad():
         for i, g in enumerate(state):
             robot_type = robot_group_types[i]
@@ -179,16 +179,20 @@ def step_diffusion_model(state, diffusion_models, robot_group_types, train = Tru
             for j, s in enumerate(g):
                 if s is not None:
                     s = transforms.ToTensor()(s).unsqueeze(0).to(device=device,dtype=torch.float32)
-                    o = diffusion_models[i].actor.sample(s).squeeze(0)
+                    o = diffusion_models[i].actor(s).squeeze(0)
                     if random.random() < exploration_eps:
                         a = random.randrange(VectorEnv.get_action_space(robot_type))
                     else:
                         a = o.view(1, -1).max(1)[1].item()
                     action[i][j] = a
                     #print(i,j,a,o.view(1, -1).max(1)[1].item())
-                    #output[i][j] = o.cpu().numpy()
+                    output[i][j] = o.cpu().numpy()
             if train:
                 diffusion_models[i].actor.train()
+    if debug:
+            info = {'output': output}
+            return action, info
+    
     #print(action)            
     return action
 
@@ -208,10 +212,18 @@ def step_diffusion_models(state, diffusion_models, policy, robot_group_types, tr
 
     # Add predicted intention map to state
     state = policy.step_intention(state,debug=False)
-    #if debug:
-    #    state, info_intention = state
+    if debug:
+        state, info_intention = state
 
-    return step_diffusion_model(state, diffusion_models, robot_group_types, train=train, exploration_eps=exploration_eps)
+    action = step_diffusion_model(state, diffusion_models, robot_group_types, train=train, exploration_eps=exploration_eps, debug=debug)
+
+    if debug:
+        action, info = action
+        info['state_intention'] = state
+        info['output_intention'] = info_intention['output_intention']
+        return action, info
+
+    return action
 
     
 def main(cfg):
@@ -242,8 +254,8 @@ def main(cfg):
     num_input_channels = (cfg.num_input_channels) 
     state_dim = num_input_channels * one_channel_state_dim 
     #discount = 0.99 #default values from QL diffusion
-    tau = 0.5 #default values from QL diffusion
-    ema_decay = 0.5
+    tau = 0.05 #default values from QL diffusion
+    ema_decay = 0.995
     
     diffusion_models = []
     for robot_type in robot_group_types:
@@ -260,7 +272,8 @@ def main(cfg):
                  discount=discount,
                  tau=tau,
                  lr = 1e-4,
-                 ema_decay = ema_decay)
+                 ema_decay = ema_decay,
+                 update_ema_every = 2)
         diffusion_models.append(agent)
 
     # Optimizers
@@ -311,7 +324,7 @@ def main(cfg):
     #print(state)
     transition_tracker = TransitionTracker(state)
     learning_starts = np.round(cfg.learning_starts_frac * cfg.total_timesteps).astype(np.uint32)
-    #learning_starts = 50
+    learning_starts = 50
     total_timesteps_with_warm_up = learning_starts + cfg.total_timesteps
     for timestep in tqdm(range(start_timestep, total_timesteps_with_warm_up), initial=start_timestep, total=total_timesteps_with_warm_up, file=sys.stdout):
         # Select an action for each robot
@@ -390,7 +403,8 @@ def main(cfg):
             # Visualize Q-network outputs
             if timestep >= learning_starts:
                 random_state = [[random.choice(replay_buffers[i].buffer).state] for _ in range(num_robot_groups)]
-                _, info = policy.step(random_state, debug=True)
+                #_, info = policy.step(random_state, debug=True)
+                _, info = step_diffusion_models(random_state, diffusion_models, policy, train=True, robot_group_types=robot_group_types, debug=True)
                 for i in range(num_robot_groups):
                     visualization = utils.get_state_output_visualization(random_state[i][0], info['output'][i][0]).transpose((2, 0, 1))
                     visualization_summary_writer.add_image('output/robot_group_{:02}'.format(i + 1), visualization, timestep + 1)
