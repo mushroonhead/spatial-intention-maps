@@ -211,7 +211,7 @@ def step_diffusion_models(state, diffusion_models, policy, robot_group_types, tr
         state = state_copy
 
     # Add predicted intention map to state
-    state = policy.step_intention(state,debug=False)
+    state = policy.step_intention(state,debug=debug)
     if debug:
         state, info_intention = state
 
