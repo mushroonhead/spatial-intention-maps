@@ -404,7 +404,7 @@ def main(cfg):
             if timestep >= learning_starts:
                 random_state = [[random.choice(replay_buffers[i].buffer).state] for _ in range(num_robot_groups)]
                 #_, info = policy.step(random_state, debug=True)
-                _, info = step_diffusion_models(random_state, diffusion_models, policy, train=True, robot_group_types=robot_group_types, debug=True)
+                _, info = step_diffusion_models(random_state, diffusion_models, policy, train=True, robot_group_types=robot_group_types, debug=True, exploration_eps=cfg.final_exploration)
                 for i in range(num_robot_groups):
                     visualization = utils.get_state_output_visualization(random_state[i][0], info['output'][i][0]).transpose((2, 0, 1))
                     visualization_summary_writer.add_image('output/robot_group_{:02}'.format(i + 1), visualization, timestep + 1)
